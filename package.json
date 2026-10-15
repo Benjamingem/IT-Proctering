@@ -1,0 +1,28 @@
+{
+  "name": "employee-activity-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Transparent employee attendance and activity tracking for managed IT teams",
+  "workspaces": [
+    "apps/api",
+    "apps/desktop",
+    "packages/shared"
+  ],
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "dev": "npm run dev --workspace @eam/api",
+    "start": "npm run start --workspace @eam/api",
+    "desktop": "npm run start --workspace @eam/desktop",
+    "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "seed:admin": "npm run seed:admin --workspace @eam/api",
+    "test": "node --test tests/*.test.js",
+    "test:api": "node --test tests/api.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

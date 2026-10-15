@@ -1,0 +1,14 @@
+{
+  "name": "@eam/desktop",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": { "start": "electron ." },
+  "devDependencies": {
+    "electron": "^44.7.2"
+  },
+  "dependencies": {
+    "@eam/shared": "*"
+  }
+}

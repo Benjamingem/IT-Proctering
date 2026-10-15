@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f9fa">
+  <title>Ben Infotech | Workforce</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app" aria-live="polite">
+    <section class="login-screen" id="login-screen">
+      <div class="login-mark" aria-hidden="true">B</div>
+      <p class="eyebrow">BEN INFOTECH WORKFORCE</p>
+      <h1>Sign in to your workspace</h1>
+      <p class="muted">Use your organization account to continue.</p>
+      <p class="privacy-note">When the Windows desktop agent is active, foreground application names and window titles are recorded when they change. Titles may reveal webpage or document names.</p>
+      <form id="login-form" class="login-form">
+        <label for="email">Work email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required maxlength="254">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <p class="form-error" id="login-error" role="alert"></p>
+        <button class="button button-primary" type="submit">Sign in</button>
+      </form>
+      <div class="privacy-note demo-credentials">
+        <strong>Demo credentials (local only)</strong>
+        <span>Admin: admin@northstar.local</span>
+        <span>Password: Local-only-admin-2026!</span>
+        <span>Employee: sample.employee@northstar.local</span>
+        <span>Password: Local-only-employee-2026!</span>
+      </div>
+    </section>
+    <section class="workspace hidden" id="workspace">
+      <aside class="sidebar">
+        <a class="brand" href="#dashboard" aria-label="Ben Infotech Workforce dashboard"><span class="brand-mark">B</span><span>Ben Infotech<small>WORKFORCE</small></span></a>
+        <div class="nav-label" id="nav-label">WORKSPACE</div>
+        <nav id="navigation" aria-label="Main navigation"></nav>
+        <div class="sidebar-bottom"><span class="status-dot" data-service-indicator></span><span data-service-label>Connecting</span></div>
+      </aside>
+      <section class="content-shell">
+        <header class="topbar"><div><p class="eyebrow" id="top-eyebrow">WORKSPACE</p><h1 id="page-title">Dashboard</h1></div><div class="user-menu"><span class="avatar" id="user-avatar">N</span><span id="user-name"></span><span class="role-tag" id="user-role"></span><button id="logout-button" class="button button-secondary">Sign out</button></div></header>
+        <main class="page-content" id="page-content"></main>
+      </section>
+    </section>
+  </main>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
