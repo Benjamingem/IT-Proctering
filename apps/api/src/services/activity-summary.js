@@ -1,11 +1,16 @@
 import { calculateDurations } from '@eam/shared';
 
-export function summarizeActivity(db, userId, rangeStart, rangeEnd) {
+export function summarizeActivity(db, userId, rangeStart, rangeEnd, { carryForwardOnlyFromOngoingSession = false } = {}) {
   const start = new Date(rangeStart).toISOString();
   const end = new Date(rangeEnd).toISOString();
   if (Date.parse(end) <= Date.parse(start)) throw new RangeError('Report end must be after report start');
-  const prior = db.prepare(`SELECT status, previous_status AS previousStatus, occurred_at AS occurredAt FROM activity_events
-    WHERE user_id = ? AND occurred_at < ? ORDER BY occurred_at DESC, id DESC LIMIT 1`).get(userId, start);
+  const prior = carryForwardOnlyFromOngoingSession
+    ? db.prepare(`SELECT e.status, e.previous_status AS previousStatus, e.occurred_at AS occurredAt FROM activity_events e
+      JOIN auth_sessions s ON s.id = e.auth_session_id
+      WHERE e.user_id = ? AND e.occurred_at < ? AND s.started_at < ? AND (s.ended_at IS NULL OR s.ended_at > ?)
+      ORDER BY e.occurred_at DESC, e.id DESC LIMIT 1`).get(userId, start, start, start)
+    : db.prepare(`SELECT status, previous_status AS previousStatus, occurred_at AS occurredAt FROM activity_events
+      WHERE user_id = ? AND occurred_at < ? ORDER BY occurred_at DESC, id DESC LIMIT 1`).get(userId, start);
   const events = db.prepare(`SELECT status, previous_status AS previousStatus, occurred_at AS occurredAt FROM activity_events
     WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at, id`).all(userId, start, end);
   const timeline = prior ? [prior, ...events] : events;
@@ -14,6 +19,20 @@ export function summarizeActivity(db, userId, rangeStart, rangeEnd) {
     ...durations,
     awaySessions: events.filter((event) => event.status === 'away' && event.previousStatus !== 'away').length
   };
+}
+
+export function parseDashboardDayStart(value, referenceDate = new Date()) {
+  if (value === undefined) {
+    const dayStart = new Date(referenceDate);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    return dayStart.toISOString();
+  }
+  if (typeof value !== 'string') throw new RangeError('Dashboard day start must be a valid ISO timestamp no later than now');
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value || timestamp > referenceDate.getTime()) {
+    throw new RangeError('Dashboard day start must be a valid ISO timestamp no later than now');
+  }
+  return new Date(timestamp).toISOString();
 }
 
 export function parseReportRange(query) {

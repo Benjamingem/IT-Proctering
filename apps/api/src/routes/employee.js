@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { createCsv, parseReportRange, summarizeActivity } from '../services/activity-summary.js';
+import { createCsv, parseDashboardDayStart, parseReportRange, summarizeActivity } from '../services/activity-summary.js';
 
 const now = () => new Date().toISOString();
 const requireEmployee = (req, res, next) => req.auth?.role === 'employee' ? next() : res.status(req.auth ? 403 : 401).json({ error: req.auth ? 'Employee access required' : 'Authentication required' });
@@ -22,19 +22,20 @@ export function createEmployeeRouter({ db }) {
   });
 
   router.get('/dashboard', (req, res) => {
+    const rangeEnd = new Date();
+    let dayStart;
+    try { dayStart = parseDashboardDayStart(req.query.dayStart, rangeEnd); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
     const latest = db.prepare('SELECT status, occurred_at AS occurredAt, reason FROM activity_events WHERE auth_session_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 1').get(req.auth.sessionId);
     const events = db.prepare(`SELECT status, occurred_at AS occurredAt FROM activity_events WHERE user_id = ?
-      AND occurred_at >= ? ORDER BY occurred_at, id`).all(req.auth.userId, new Date(new Date().setUTCHours(0, 0, 0, 0)).toISOString());
+      AND occurred_at >= ? ORDER BY occurred_at, id`).all(req.auth.userId, dayStart);
     const applicationSwitches = db.prepare(`SELECT previous_application AS previousApplication, previous_window_title AS previousWindowTitle,
       application, window_title AS windowTitle, occurred_at AS occurredAt FROM application_switch_events
       WHERE user_id = ? AND occurred_at >= ? ORDER BY occurred_at DESC, id DESC LIMIT 200`)
-      .all(req.auth.userId, new Date(new Date().setUTCHours(0, 0, 0, 0)).toISOString());
-    const today = new Date();
+      .all(req.auth.userId, dayStart);
     const sessionStarted = db.prepare('SELECT started_at AS startedAt, last_heartbeat_at AS lastHeartbeat, last_activity_at AS lastActivityAt FROM auth_sessions WHERE id = ?').get(req.auth.sessionId);
     const webSession = db.prepare('SELECT started_at AS startedAt FROM web_attendance_sessions WHERE auth_session_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(req.auth.sessionId);
-    const rangeStart = new Date();
-    rangeStart.setUTCHours(0, 0, 0, 0);
-    const summary = summarizeActivity(db, req.auth.userId, rangeStart, new Date());
+    const summary = summarizeActivity(db, req.auth.userId, dayStart, rangeEnd, { carryForwardOnlyFromOngoingSession: true });
     const awaySessions = events.filter((event, index) => event.status === 'away' && events[index - 1]?.status !== 'away').length;
     const firstAvailable = events.find((event) => event.status === 'available')?.occurredAt || null;
     const lastActivity = [...events].reverse().find((event) => event.status === 'available')?.occurredAt || null;
@@ -50,7 +51,7 @@ export function createEmployeeRouter({ db }) {
       applicationSwitches,
       cameraPolicy: { enabled: false, status: 'disabled_by_default' },
       session: { startedAt: sessionStarted.startedAt, lastHeartbeatAt: sessionStarted.lastHeartbeat, lastActivityAt: sessionStarted.lastActivityAt, expiresAt: req.auth.expiresAt },
-      asOf: today.toISOString()
+      asOf: rangeEnd.toISOString()
     });
   });
 

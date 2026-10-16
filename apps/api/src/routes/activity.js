@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { HEARTBEAT_STALE_THRESHOLD_MS } from '@eam/shared';
 
 const now = () => new Date().toISOString();
 const requireEmployee = (req, res, next) => req.auth?.role === 'employee' ? next() : res.status(req.auth ? 403 : 401).json({ error: req.auth ? 'Employee access required' : 'Authentication required' });
@@ -45,16 +46,31 @@ export function createActivityRouter({ db, io }) {
     const approvedNetwork = networkSsid && approvedNetworkCount && approvedNetworks.some((network) => network.ssid === networkSsid);
     const officeNetworkStatus = !networkSsid ? 'unknown' : approvedNetworkCount === 0 ? 'not_configured' : approvedNetwork ? 'matched' : 'not_matched';
     const networkMatch = officeNetworkStatus === 'matched' ? 1 : officeNetworkStatus === 'not_matched' ? 0 : null;
+    const session = db.prepare('SELECT last_heartbeat_at AS lastHeartbeatAt FROM auth_sessions WHERE id = ? AND ended_at IS NULL')
+      .get(req.auth.sessionId);
+    const current = db.prepare('SELECT status, occurred_at AS occurredAt FROM activity_events WHERE auth_session_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 1')
+      .get(req.auth.sessionId);
+    const lastHeartbeatAt = Date.parse(session.lastHeartbeatAt);
+    const lastKnownAt = Math.max(lastHeartbeatAt, Date.parse(current?.occurredAt) || 0);
+    if (current && ['available', 'away'].includes(current.status)
+      && Date.parse(heartbeatAt) - lastKnownAt > HEARTBEAT_STALE_THRESHOLD_MS) {
+      const offlineAt = new Date(lastKnownAt + HEARTBEAT_STALE_THRESHOLD_MS).toISOString();
+      db.prepare(`INSERT INTO activity_events (user_id, auth_session_id, previous_status, status, reason, occurred_at)
+        VALUES (?, ?, ?, 'offline', 'heartbeat_timeout', ?)`).run(req.auth.userId, req.auth.sessionId, current.status, offlineAt);
+      const event = { userId: req.auth.userId, status: 'offline', reason: 'heartbeat_timeout', occurredAt: offlineAt };
+      io.to('admins').emit('agent:stale', event);
+      io.to(`user:${req.auth.userId}`).emit('activity:transition', event);
+    }
     db.prepare(`UPDATE auth_sessions SET last_heartbeat_at = ?, last_activity_at = ?, last_network_ssid = ?, last_network_match = ?
       WHERE id = ? AND ended_at IS NULL`).run(heartbeatAt, lastActivityAt, networkSsid, networkMatch, req.auth.sessionId);
     const policy = db.prepare('SELECT idle_threshold_seconds AS threshold FROM application_settings WHERE id = 1').get();
     const repetitiveInput = parsed.data.repetitiveInput === true;
     const nextStatus = parsed.data.locked || repetitiveInput || parsed.data.idleSeconds >= policy.threshold ? 'away' : 'available';
-    const current = db.prepare('SELECT status FROM activity_events WHERE auth_session_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 1').get(req.auth.sessionId);
-    if (current?.status !== nextStatus) {
+    const latestStatus = db.prepare('SELECT status FROM activity_events WHERE auth_session_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 1').get(req.auth.sessionId);
+    if (latestStatus?.status !== nextStatus) {
       const reason = parsed.data.locked ? 'screen_locked' : repetitiveInput ? 'repetitive_input_pattern' : nextStatus === 'away' ? 'os_idle_threshold' : 'os_user_activity';
       db.prepare(`INSERT INTO activity_events (user_id, auth_session_id, previous_status, status, reason, occurred_at)
-        VALUES (?, ?, ?, ?, ?, ?)`).run(req.auth.userId, req.auth.sessionId, current?.status || 'unknown', nextStatus, reason, heartbeatAt);
+        VALUES (?, ?, ?, ?, ?, ?)`).run(req.auth.userId, req.auth.sessionId, latestStatus?.status || 'unknown', nextStatus, reason, heartbeatAt);
       const event = { userId: req.auth.userId, status: nextStatus, reason, occurredAt: heartbeatAt };
       io.to('admins').emit('activity:transition', event);
       io.to(`user:${req.auth.userId}`).emit('activity:transition', event);

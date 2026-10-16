@@ -4,7 +4,7 @@ After Employee sign-in, the agent reports operating-system idle duration and, on
 
 An Admin can add exact SSID strings under Policies. Match state is informational because SSIDs can be spoofed. An approved match never activates the camera; camera access and capture remain disabled.
 
-Start the API first, then run `npm run desktop` from the project root. The tray menu provides the dashboard, explicit Start with Windows opt-in, sign-out, and quit. Closing the window hides it to the tray; quitting ends the server session. Set `EAM_API_ORIGIN` to the API origin when it is not `http://localhost:3000`.
+Start the API first, then run `npm run desktop` from the project root. The tray menu provides the dashboard, explicit Start with Windows opt-in, sign-out, and quit. Minimizing the dashboard or closing its window does not stop monitoring; closing hides it to the tray, and the desktop agent continues reporting while it is running. Choose Quit and end session to stop the agent and end the server session. Set `EAM_API_ORIGIN` to the API origin when it is not `http://localhost:3000`.
 
 To create a Windows portable ZIP, run `npm run build:desktop` from the project root. Extract it to a managed location and deploy it through the organization's authorized endpoint-management process. This starter does not produce an installer or enable startup automatically.
 

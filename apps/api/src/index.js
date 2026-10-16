@@ -11,6 +11,7 @@ import { createAuthRouter, createSessionMiddleware, COOKIE_NAME, hashToken } fro
 import { createAdminRouter } from './routes/admin.js';
 import { createEmployeeRouter } from './routes/employee.js';
 import { createActivityRouter } from './routes/activity.js';
+import { HEARTBEAT_STALE_THRESHOLD_MS } from '@eam/shared';
 
 const app = express();
 const server = createServer(app);
@@ -61,19 +62,24 @@ const port = Number(process.env.PORT || 3000);
 if (process.env.NODE_ENV !== 'test') {
   const staleTimer = setInterval(() => {
     const observedAt = new Date().toISOString();
-    const cutoff = new Date(Date.now() - 45_000).toISOString();
-    const staleSessions = db.prepare(`SELECT s.id AS sessionId, s.user_id AS userId, e.status AS previousStatus
+    const cutoff = new Date(Date.now() - HEARTBEAT_STALE_THRESHOLD_MS).toISOString();
+    const staleSessions = db.prepare(`SELECT s.id AS sessionId, s.user_id AS userId, s.last_heartbeat_at AS lastHeartbeatAt,
+      s.expires_at AS expiresAt, e.status AS previousStatus
       FROM auth_sessions s JOIN users u ON u.id = s.user_id
       JOIN activity_events e ON e.id = (SELECT latest.id FROM activity_events latest
         WHERE latest.auth_session_id = s.id ORDER BY latest.occurred_at DESC, latest.id DESC LIMIT 1)
-      WHERE s.ended_at IS NULL AND s.expires_at > ? AND s.last_heartbeat_at < ? AND e.status IN ('available', 'away') AND u.active = 1`)
-      .all(observedAt, cutoff);
+      WHERE s.ended_at IS NULL AND s.last_heartbeat_at < ? AND e.status IN ('available', 'away') AND u.active = 1`)
+      .all(cutoff);
     const insertOffline = db.prepare(`INSERT INTO activity_events (user_id, auth_session_id, previous_status, status, reason, occurred_at)
       VALUES (?, ?, ?, 'offline', 'heartbeat_timeout', ?)`);
     for (const stale of staleSessions) {
-      insertOffline.run(stale.userId, stale.sessionId, stale.previousStatus, observedAt);
-      io.to('admins').emit('agent:stale', { userId: stale.userId, status: 'offline', reason: 'heartbeat_timeout', occurredAt: observedAt });
-      io.to(`user:${stale.userId}`).emit('activity:transition', { userId: stale.userId, status: 'offline', reason: 'heartbeat_timeout', occurredAt: observedAt });
+      const offlineAt = new Date(Math.min(
+        Date.parse(stale.lastHeartbeatAt) + HEARTBEAT_STALE_THRESHOLD_MS,
+        Date.parse(stale.expiresAt)
+      )).toISOString();
+      insertOffline.run(stale.userId, stale.sessionId, stale.previousStatus, offlineAt);
+      io.to('admins').emit('agent:stale', { userId: stale.userId, status: 'offline', reason: 'heartbeat_timeout', occurredAt: offlineAt });
+      io.to(`user:${stale.userId}`).emit('activity:transition', { userId: stale.userId, status: 'offline', reason: 'heartbeat_timeout', occurredAt: offlineAt });
     }
   }, 10_000);
   staleTimer.unref();

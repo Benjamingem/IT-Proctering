@@ -1,6 +1,7 @@
 export const ACCOUNT_ROLES = Object.freeze({ ADMIN: 'admin', EMPLOYEE: 'employee' });
 export const AVAILABILITY = Object.freeze({ UNKNOWN: 'unknown', AVAILABLE: 'available', AWAY: 'away', OFFLINE: 'offline' });
 export const DEFAULT_IDLE_THRESHOLD_SECONDS = 60;
+export const HEARTBEAT_STALE_THRESHOLD_MS = 45_000;
 export const DEFAULT_CAMERA_POLICY = Object.freeze({ enabled: false, requireOfficeNetwork: true });
 
 export function getAwayPopupAction(currentStatus, nextStatus) {

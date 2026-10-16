@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { createCsv, parseReportRange, summarizeActivity } from '../services/activity-summary.js';
+import { createCsv, parseDashboardDayStart, parseReportRange, summarizeActivity } from '../services/activity-summary.js';
 
 const now = () => new Date().toISOString();
 const employeeInput = z.object({
@@ -19,8 +19,9 @@ export function createAdminRouter({ db, io }) {
 
   router.get('/dashboard', (req, res) => {
     const observedAt = now();
-    const dayStart = new Date();
-    dayStart.setUTCHours(0, 0, 0, 0);
+    let dayStart;
+    try { dayStart = parseDashboardDayStart(req.query.dayStart, new Date(observedAt)); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
     const employees = db.prepare(`SELECT u.id, u.full_name AS fullName, u.email, u.department, u.designation, u.active,
       (SELECT e.status FROM activity_events e WHERE e.user_id = u.id ORDER BY e.occurred_at DESC, e.id DESC LIMIT 1) AS status,
       (SELECT s.last_heartbeat_at FROM auth_sessions s WHERE s.user_id = u.id AND s.ended_at IS NULL
@@ -37,13 +38,12 @@ export function createAdminRouter({ db, io }) {
        FROM auth_sessions s WHERE s.user_id = u.id AND s.ended_at IS NULL ORDER BY s.started_at DESC LIMIT 1) AS officeNetworkStatus,
       EXISTS (SELECT 1 FROM auth_sessions s WHERE s.user_id = u.id AND s.ended_at IS NULL AND s.expires_at > ?) AS sessionActive,
       EXISTS (SELECT 1 FROM activity_events e WHERE e.user_id = u.id AND e.reason = 'login' AND e.occurred_at >= ?) AS loggedInToday
-      FROM users u WHERE u.role = 'employee' AND u.active = 1 ORDER BY u.full_name COLLATE NOCASE`).all(observedAt, dayStart.toISOString());
+      FROM users u WHERE u.role = 'employee' AND u.active = 1 ORDER BY u.full_name COLLATE NOCASE`).all(observedAt, dayStart);
     const present = employees.filter((employee) => employee.sessionActive || employee.loggedInToday).length;
     const offline = employees.filter((employee) => (employee.sessionActive || employee.loggedInToday) && ['offline', 'unknown', null].includes(employee.status)).length;
-    const rangeStart = new Date();
-    rangeStart.setUTCHours(0, 0, 0, 0);
+    const rangeEnd = new Date(observedAt);
     const durations = employees.reduce((totals, employee) => {
-      const summary = summarizeActivity(db, employee.id, rangeStart, new Date());
+      const summary = summarizeActivity(db, employee.id, dayStart, rangeEnd, { carryForwardOnlyFromOngoingSession: true });
       totals.activeInteractionMs += summary.availableMs;
       totals.awayMs += summary.awayMs;
       return totals;

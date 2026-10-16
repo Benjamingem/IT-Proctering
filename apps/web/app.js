@@ -5,7 +5,7 @@ const loginScreen = document.querySelector('#login-screen');
 const workspace = document.querySelector('#workspace');
 const pageContent = document.querySelector('#page-content');
 const navElement = document.querySelector('#navigation');
-const state = { user: null, view: 'dashboard', socket: null, employees: [], search: '', activityTracker: null, activityTimer: null, activityHandlers: null, activityHeartbeatInFlight: false, activityStatus: 'unknown', attendanceClientSessionId: null };
+const state = { user: null, view: 'dashboard', socket: null, employees: [], search: '', activityTracker: null, activityTimer: null, dashboardRefreshTimer: null, dashboardMidnightTimer: null, activityHandlers: null, activityHeartbeatInFlight: false, activityStatus: 'unknown', attendanceClientSessionId: null };
 const adminNav = [['dashboard', 'Overview', '▦'], ['employees', 'Employees', '♧'], ['reports', 'Reports', '▤'], ['policies', 'Policies', '⚙'], ['audit', 'Audit log', '≡']];
 const employeeNav = [['dashboard', 'My dashboard', '▦'], ['attendance', 'Attendance', '◷'], ['activity', 'Activity timeline', '≋'], ['reports', 'My reports', '▤'], ['profile', 'My profile', '○']];
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -32,9 +32,27 @@ function formatTime(value) {
   if (!value) return 'Not reported';
   return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
 }
+function getLocalDayStart() {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  return dayStart.toISOString();
+}
+function scheduleDashboardMidnightRefresh() {
+  window.clearTimeout(state.dashboardMidnightTimer);
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 0, 0);
+  state.dashboardMidnightTimer = window.setTimeout(() => {
+    state.dashboardMidnightTimer = null;
+    if (state.view === 'dashboard' && state.user) loadView();
+  }, nextMidnight.getTime() - now.getTime());
+}
+function dashboardApiPath(path) {
+  return `${path}?dayStart=${encodeURIComponent(getLocalDayStart())}`;
+}
 function formatDuration(milliseconds) {
   const minutes = Math.floor(Math.max(0, Number(milliseconds) || 0) / 60000);
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 function officeNetworkStatusLabel(status) {
   return ({ matched: 'Approved Wi-Fi', not_matched: 'Not approved', not_configured: 'Allowlist empty', unknown: 'Not reported' })[status] || 'Unknown';
@@ -156,7 +174,9 @@ function startBrowserActivityMonitor() {
   sessionStorage.setItem(storageKey, state.attendanceClientSessionId);
   const tracker = createActivityTracker();
   state.activityTracker = tracker;
-  let attendanceReady = false;
+  let attendanceStarted = false;
+  let attendanceStartInFlight = false;
+  let attendanceStartErrorShown = false;
   const onPointerMove = (event) => tracker.notePointerMove(event.clientX, event.clientY);
   const onPointerDown = (event) => tracker.notePointerDown(getActivityTarget(event));
   const onPointerUp = (event) => tracker.notePointerUp(getActivityTarget(event));
@@ -171,7 +191,7 @@ function startBrowserActivityMonitor() {
   window.addEventListener('scroll', onScroll, { passive: true });
   state.activityHandlers = { onClick, onKeyDown, onPointerDown, onPointerMove, onPointerUp, onScroll };
   const report = async () => {
-    if (!attendanceReady || state.activityHeartbeatInFlight || !state.activityTracker) return;
+    if (state.activityHeartbeatInFlight || !state.activityTracker) return;
     state.activityHeartbeatInFlight = true;
     try {
       const activity = tracker.getState();
@@ -184,15 +204,26 @@ function startBrowserActivityMonitor() {
     }
   };
   const startAttendance = async () => {
+    if (attendanceStarted || attendanceStartInFlight) return;
+    attendanceStartInFlight = true;
     try {
       await api('/employee/attendance/start', { method: 'POST', body: JSON.stringify({ clientSessionId: state.attendanceClientSessionId }) });
-    } catch {}
-    attendanceReady = true;
-    if (state.view === 'dashboard') loadView();
-    void report();
+      attendanceStarted = true;
+      attendanceStartErrorShown = false;
+      if (state.view === 'dashboard') loadView();
+    } catch (error) {
+      if (!attendanceStartErrorShown) toast(`Attendance tracking could not start: ${error.message}`);
+      attendanceStartErrorShown = true;
+    } finally {
+      attendanceStartInFlight = false;
+    }
   };
   void startAttendance();
-  state.activityTimer = window.setInterval(report, 5000);
+  void report();
+  state.activityTimer = window.setInterval(() => {
+    void startAttendance();
+    void report();
+  }, 5000);
 }
 function stopBrowserActivityMonitor() {
   if (state.activityTimer) window.clearInterval(state.activityTimer);
@@ -211,12 +242,17 @@ function stopBrowserActivityMonitor() {
 }
 function navigate(view) { state.view = view; renderNavigation(); loadView(); }
 async function loadView() {
+  window.clearInterval(state.dashboardRefreshTimer);
+  state.dashboardRefreshTimer = null;
+  window.clearTimeout(state.dashboardMidnightTimer);
+  state.dashboardMidnightTimer = null;
   const titles = { dashboard: 'Dashboard', employees: 'Employees', policies: 'Policies', audit: 'Audit log', reports: 'Reports', attendance: 'Attendance', activity: 'Activity timeline', profile: 'My profile' };
   const title = titles[state.view] || 'Dashboard';
   document.querySelector('#page-title').textContent = title;
   document.querySelector('#top-eyebrow').textContent = state.user.role === 'admin' ? 'ADMINISTRATION' : 'MY WORKSPACE';
   pageContent.innerHTML = '<div class="empty-state">Loading current records…</div>';
   try {
+    if (state.view === 'dashboard') scheduleDashboardMidnightRefresh();
     if (state.view === 'dashboard') state.user.role === 'admin' ? await renderAdminDashboard() : await renderEmployeeDashboard();
     else if (state.view === 'employees') await renderEmployees();
     else if (state.view === 'policies') await renderPolicies();
@@ -227,10 +263,10 @@ async function loadView() {
   } catch (error) { pageContent.innerHTML = `<div class="notice">${escapeHtml(error.message)}</div>`; }
 }
 async function renderAdminDashboard() {
-  const { kpis, employees } = await api('/admin/dashboard');
+  const { kpis, employees } = await api(dashboardApiPath('/admin/dashboard'));
   const cards = [['Total employees', kpis.totalEmployees], ['Present today', kpis.presentToday], ['Available now', kpis.available], ['Away now', kpis.away], ['Offline / unknown', kpis.offline], ['Absent today', kpis.absentToday], ['Available interaction today', formatDuration(kpis.activeInteractionMs)], ['Away duration today', formatDuration(kpis.awayMs)]];
   pageContent.innerHTML = `<div class="page-heading"><div><h2>Team overview</h2><p>Current session and device status, based on the latest server event.</p></div><div class="connection"><span class="status-dot online"></span> Live connection</div></div>
-    <div class="kpi-grid">${cards.map(([label, value]) => `<article class="kpi"><div class="kpi-label">${label}</div><strong class="kpi-number">${value}</strong>${label.includes('interaction') || label.includes('duration') ? '<div class="kpi-sub">Not verified productive work</div>' : ''}</article>`).join('')}</div>
+    <div class="kpi-grid">${cards.map(([label, value]) => `<article class="kpi"><div class="kpi-label">${label}</div><strong class="kpi-number" ${label === 'Available interaction today' ? 'data-dashboard-kpi="availableInteraction"' : label === 'Away duration today' ? 'data-dashboard-kpi="awayDuration"' : ''}>${value}</strong>${label.includes('interaction') || label.includes('duration') ? '<div class="kpi-sub">Not verified productive work</div>' : ''}</article>`).join('')}</div>
     <section class="panel"><div class="panel-header"><div><h3>Live employee status</h3><p>Unknown is kept separate from confirmed Available and Away status.</p></div><div class="filters"><input id="dashboard-search" type="search" aria-label="Search employees" placeholder="Search name or email"></div></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Status</th><th>Last heartbeat</th><th>Reported Wi-Fi</th></tr></thead><tbody id="dashboard-rows"></tbody></table></div></section>`;
   const search = document.querySelector('#dashboard-search');
   const draw = () => {
@@ -240,14 +276,58 @@ async function renderAdminDashboard() {
   };
   search.addEventListener('input', draw);
   draw();
+  state.dashboardRefreshTimer = window.setInterval(async () => {
+    if (state.view !== 'dashboard' || state.user?.role !== 'admin') return;
+    try {
+      const refreshed = await api(dashboardApiPath('/admin/dashboard'));
+      const available = pageContent.querySelector('[data-dashboard-kpi="availableInteraction"]');
+      const away = pageContent.querySelector('[data-dashboard-kpi="awayDuration"]');
+      if (available) available.textContent = formatDuration(refreshed.kpis.activeInteractionMs);
+      if (away) away.textContent = formatDuration(refreshed.kpis.awayMs);
+    } catch (error) {
+      toast(`Dashboard refresh failed: ${error.message}`);
+    }
+  }, 60_000);
 }
 async function renderEmployeeDashboard() {
-  const data = await api('/employee/dashboard');
+  const data = await api(dashboardApiPath('/employee/dashboard'));
+  const updateDashboard = (dashboardData) => {
+    const timeline = pageContent.querySelector('[data-dashboard-timeline]');
+    const scrollContainer = timeline?.parentElement;
+    const scrollTop = scrollContainer?.scrollTop || 0;
+    const events = combineTimelineEvents(dashboardData.events, dashboardData.applicationSwitches || []).slice(0, 200);
+    const values = {
+      status: dashboardData.status,
+      login: formatTime(dashboardData.attendanceStartedAt || dashboardData.session.startedAt),
+      firstAvailable: formatTime(dashboardData.firstAvailableAt),
+      awaySessions: dashboardData.awaySessions,
+      availableInteraction: formatDuration(dashboardData.availableInteractionMs),
+      awayDuration: formatDuration(dashboardData.awayDurationMs),
+      lastActivity: `Last activity signal: ${formatTime(dashboardData.lastActivityAt)}`
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const element = pageContent.querySelector(`[data-dashboard-value="${key}"]`);
+      if (element) element.textContent = value;
+    }
+    if (timeline) {
+      timeline.innerHTML = events.length ? events.map((event) => renderTimelineRow(event)).join('') : '<div class="empty-state">No activity recorded yet.</div>';
+      if (scrollContainer) scrollContainer.scrollTop = scrollTop;
+    }
+  };
   const events = combineTimelineEvents(data.events, data.applicationSwitches || []).slice(0, 200);
   pageContent.innerHTML = `<div class="page-heading"><div><h2>Your day at a glance</h2><p>Attendance and interaction signals are shown separately from productive work.</p></div><div class="connection"><span class="status-dot online"></span> Signed in</div></div>
-    <div class="status-hero"><div><p class="eyebrow">CURRENT DEVICE STATUS</p><h2>${escapeHtml(data.status)}</h2><p class="muted">Last activity signal: ${formatTime(data.lastActivityAt)}</p></div><span class="status-orb" aria-hidden="true">◉</span></div>
-    <div class="two-column" style="margin-top:15px"><section><div class="metric-list"><div class="metric-row"><span>Website login time</span><strong>${formatTime(data.attendanceStartedAt || data.session.startedAt)}</strong></div><div class="metric-row"><span>First available</span><strong>${formatTime(data.firstAvailableAt)}</strong></div><div class="metric-row"><span>Away sessions today</span><strong>${data.awaySessions}</strong></div><div class="metric-row"><span>Available interaction</span><strong>${formatDuration(data.availableInteractionMs)}</strong></div><div class="metric-row"><span>Away duration</span><strong>${formatDuration(data.awayDurationMs)}</strong></div></div><div class="notice" style="margin-top:14px">The Windows desktop agent records foreground app and window-title changes; titles may reveal webpage or document names. Browser status uses activity in this tab only. No typed content, raw coordinates, or click targets are sent or persisted. Available time is not verified work time.</div></section>
-    <section class="panel timeline-panel"><div class="panel-header"><div><h3>Today's timeline</h3><p>Status and foreground app changes</p></div></div><div class="panel-body"><div class="event-list">${events.length ? events.map((event) => renderTimelineRow(event)).join('') : '<div class="empty-state">No activity recorded yet.</div>'}</div></div></section></div>`;
+    <div class="status-hero"><div><p class="eyebrow">CURRENT DEVICE STATUS</p><h2 data-dashboard-value="status">${escapeHtml(data.status)}</h2><p class="muted" data-dashboard-value="lastActivity">Last activity signal: ${formatTime(data.lastActivityAt)}</p></div><span class="status-orb" aria-hidden="true">◉</span></div>
+    <div class="two-column" style="margin-top:15px"><section><div class="metric-list"><div class="metric-row"><span>Website login time</span><strong data-dashboard-value="login">${formatTime(data.attendanceStartedAt || data.session.startedAt)}</strong></div><div class="metric-row"><span>First available</span><strong data-dashboard-value="firstAvailable">${formatTime(data.firstAvailableAt)}</strong></div><div class="metric-row"><span>Away sessions today</span><strong data-dashboard-value="awaySessions">${data.awaySessions}</strong></div><div class="metric-row"><span>Available interaction</span><strong data-dashboard-value="availableInteraction">${formatDuration(data.availableInteractionMs)}</strong></div><div class="metric-row"><span>Away duration</span><strong data-dashboard-value="awayDuration">${formatDuration(data.awayDurationMs)}</strong></div></div><div class="notice" style="margin-top:14px">The Windows desktop agent records foreground app and window-title changes; titles may reveal webpage or document names. Browser status uses activity in this tab only. No typed content, raw coordinates, or click targets are sent or persisted. Available time is not verified work time.</div></section>
+    <section class="panel timeline-panel"><div class="panel-header"><div><h3>Today's timeline</h3><p>Status and foreground app changes</p></div></div><div class="panel-body"><div class="event-list" data-dashboard-timeline>${events.length ? events.map((event) => renderTimelineRow(event)).join('') : '<div class="empty-state">No activity recorded yet.</div>'}</div></div></section></div>`;
+  state.dashboardRefreshTimer = window.setInterval(async () => {
+    if (state.view !== 'dashboard' || state.user?.role !== 'employee') return;
+    try {
+      const refreshedData = await api(dashboardApiPath('/employee/dashboard'));
+      if (state.view === 'dashboard' && state.user?.role === 'employee') updateDashboard(refreshedData);
+    } catch (error) {
+      toast(`Dashboard refresh failed: ${error.message}`);
+    }
+  }, 60_000);
 }
 async function loadEmployees() {
   const data = await api(`/admin/employees?search=${encodeURIComponent(state.search)}`);
@@ -377,7 +457,7 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   } catch (reason) { error.textContent = reason.message; }
 });
 document.querySelector('#logout-button').addEventListener('click', async () => {
-  try { await api('/auth/logout', { method: 'POST' }); } finally { stopBrowserActivityMonitor(); state.socket?.disconnect(); state.user = null; workspace.classList.add('hidden'); loginScreen.classList.remove('hidden'); document.querySelector('#login-form').reset(); }
+  try { await api('/auth/logout', { method: 'POST' }); } finally { window.clearInterval(state.dashboardRefreshTimer); state.dashboardRefreshTimer = null; window.clearTimeout(state.dashboardMidnightTimer); state.dashboardMidnightTimer = null; stopBrowserActivityMonitor(); state.socket?.disconnect(); state.user = null; workspace.classList.add('hidden'); loginScreen.classList.remove('hidden'); document.querySelector('#login-form').reset(); }
 });
 try {
   const { user } = await api('/auth/me');
