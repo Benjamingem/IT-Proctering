@@ -234,6 +234,12 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.equal(timeline.events[4].reason, 'screen_locked');
   assert.equal(timeline.events.at(-1).reason, 'test_prior_day_status');
   assert.ok(Number.isFinite(Date.parse(timeline.events[0].occurredAt)));
+  const dayEnd = new Date(utcDayStart.getTime() + 86400000);
+  const filteredTimeline = await (await api(`/employee/activity?from=${encodeURIComponent(utcDayStart.toISOString())}&to=${encodeURIComponent(dayEnd.toISOString())}`, employeeCookie)).json();
+  assert.ok(filteredTimeline.events.length > 0);
+  assert.ok(filteredTimeline.events.every((event) => Date.parse(event.occurredAt) >= utcDayStart.getTime() && Date.parse(event.occurredAt) < dayEnd.getTime()));
+  assert.equal(filteredTimeline.applicationSwitches.length, 1);
+  assert.equal((await api(`/employee/activity?from=${encodeURIComponent(utcDayStart.toISOString())}`, employeeCookie)).status, 400);
   const employeeDashboard = await (await api('/employee/dashboard', employeeCookie)).json();
   assert.equal(Date.parse(employeeDashboard.session.lastHeartbeatAt) - Date.parse(employeeDashboard.lastActivityAt), 90_000);
 

@@ -436,9 +436,140 @@ async function renderReports() {
 }
 async function renderEmployeeEvents() {
   const path = state.view === 'attendance' ? '/employee/attendance' : '/employee/activity';
-  const { events: statusEvents, applicationSwitches = [], note } = await api(path);
-  const events = combineTimelineEvents(statusEvents, state.view === 'activity' ? applicationSwitches : []).slice(0, 500);
-  pageContent.innerHTML = `<div class="page-heading"><div><h2>${state.view === 'attendance' ? 'Attendance events' : 'Personal activity timeline'}</h2><p>Only your account's records are available in this view.</p></div></div>${note ? `<div class="notice" style="margin-bottom:14px">${escapeHtml(note)}</div>` : ''}<section class="panel timeline-panel"><div class="panel-header"><h3>Recorded activity</h3></div><div class="panel-body"><div class="event-list">${events.length ? events.map((event) => renderTimelineRow(event, true)).join('') : '<div class="empty-state">There are no recorded events yet.</div>'}</div></div></section>`;
+  if (state.view === 'attendance') {
+    const { events: statusEvents, note } = await api(path);
+    const events = combineTimelineEvents(statusEvents).slice(0, 500);
+    pageContent.innerHTML = `<div class="page-heading"><div><h2>Attendance events</h2><p>Only your account's records are available in this view.</p></div></div>${note ? `<div class="notice" style="margin-bottom:14px">${escapeHtml(note)}</div>` : ''}<section class="panel timeline-panel"><div class="panel-header"><h3>Recorded activity</h3></div><div class="panel-body"><div class="event-list">${events.length ? events.map((event) => renderTimelineRow(event, true)).join('') : '<div class="empty-state">There are no recorded events yet.</div>'}</div></div></section>`;
+    return;
+  }
+
+  const selectedDate = new Date();
+  const dateValue = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
+  pageContent.innerHTML = `<div class="page-heading"><div><h2>Personal activity timeline</h2><p>Choose a month and date to view all activity for that day.</p></div></div>
+    <section class="panel timeline-panel"><div class="panel-header activity-filter-header"><div><h3>Recorded activity</h3><p data-activity-selected-date></p></div><div class="activity-filters"><div class="activity-date-filter"><span>Date</span><button id="activity-date" class="activity-date-button" type="button" aria-expanded="false" aria-controls="activity-calendar"></button><div id="activity-calendar" class="activity-calendar hidden" aria-label="Choose activity date"></div></div></div></div><div class="panel-body"><div class="event-list" data-activity-events><div class="empty-state">Loading activity…</div></div></div></section>`;
+  const dateInput = document.querySelector('#activity-date');
+  const calendar = document.querySelector('#activity-calendar');
+  let selected = new Date(`${dateValue}T00:00:00`);
+  let activityLoadId = 0;
+  let calendarView = 'day';
+  let calendarYear = selected.getFullYear();
+  let calendarMonth = selected.getMonth();
+  const dateString = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const setSelectedDate = (date) => {
+    selected = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    dateInput.textContent = `${String(selected.getDate()).padStart(2, '0')}-${String(selected.getMonth() + 1).padStart(2, '0')}-${selected.getFullYear()}`;
+  };
+  const renderCalendar = () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const calendarYearRangeStart = Math.floor(calendarYear / 12) * 12;
+    const monthName = new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(calendarYear, calendarMonth, 1));
+    const heading = `<div class="activity-calendar-heading"><button type="button" data-calendar-previous aria-label="${calendarView === 'day' ? 'Previous month' : calendarView === 'month' ? 'Previous year' : 'Previous years'}">‹</button><div class="activity-calendar-title">${calendarView === 'year' ? `<button type="button" data-calendar-show-month>${calendarYearRangeStart}–${calendarYearRangeStart + 11}</button>` : `<button type="button" data-calendar-show-month>${monthName}</button><button type="button" data-calendar-show-year>${calendarYear}</button>`}</div><button type="button" data-calendar-next aria-label="${calendarView === 'day' ? 'Next month' : calendarView === 'month' ? 'Next year' : 'Next years'}" ${calendarView !== 'day' && calendarYear > today.getFullYear() ? 'disabled' : ''}>›</button></div>`;
+    if (calendarView === 'year') {
+      const years = Array.from({ length: 12 }, (_, index) => calendarYearRangeStart + index);
+      calendar.innerHTML = `${heading}<div class="activity-calendar-grid activity-calendar-choices">${years.map((year) => `<button type="button" class="activity-calendar-choice ${year === selected.getFullYear() ? 'selected' : ''}" data-calendar-year="${year}" ${year > today.getFullYear() ? 'disabled' : ''}>${year}</button>`).join('')}</div>`;
+      calendar.querySelectorAll('[data-calendar-year]').forEach((button) => button.addEventListener('click', () => {
+        calendarYear = Number(button.dataset.calendarYear);
+        calendarView = 'month';
+        renderCalendar();
+      }));
+    } else if (calendarView === 'month') {
+      const months = Array.from({ length: 12 }, (_, month) => month);
+      calendar.innerHTML = `${heading}<div class="activity-calendar-grid activity-calendar-choices">${months.map((month) => {
+        const futureMonth = calendarYear > today.getFullYear() || (calendarYear === today.getFullYear() && month > today.getMonth());
+        const label = new Intl.DateTimeFormat(undefined, { month: 'short' }).format(new Date(calendarYear, month, 1));
+        return `<button type="button" class="activity-calendar-choice ${calendarYear === selected.getFullYear() && month === selected.getMonth() ? 'selected' : ''}" data-calendar-month="${month}" ${futureMonth ? 'disabled' : ''}>${label}</button>`;
+      }).join('')}</div>`;
+      calendar.querySelectorAll('[data-calendar-month]').forEach((button) => button.addEventListener('click', () => {
+        calendarMonth = Number(button.dataset.calendarMonth);
+        calendarView = 'day';
+        renderCalendar();
+      }));
+    } else {
+      const year = calendarYear;
+      const month = calendarMonth;
+      const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const weekdayNames = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+      const days = Array.from({ length: 42 }, (_, index) => {
+        const day = index - firstWeekday + 1;
+        if (day < 1 || day > daysInMonth) return '<span class="activity-calendar-empty" aria-hidden="true"></span>';
+        const date = new Date(year, month, day);
+        const value = dateString(date);
+        const classes = ['activity-calendar-day', value === dateString(selected) ? 'selected' : ''].filter(Boolean).join(' ');
+        return `<button class="${classes}" type="button" data-calendar-date="${value}" ${date > today ? 'disabled' : ''} aria-label="${day} ${monthName} ${year}" ${value === dateString(selected) ? 'aria-pressed="true"' : ''}>${day}</button>`;
+      }).join('');
+      calendar.innerHTML = `${heading}<div class="activity-calendar-grid activity-calendar-weekdays">${weekdayNames.map((day) => `<span>${day}</span>`).join('')}</div><div class="activity-calendar-grid">${days}</div>`;
+    }
+    calendar.querySelector('[data-calendar-show-month]')?.addEventListener('click', () => { calendarView = 'month'; renderCalendar(); });
+    calendar.querySelector('[data-calendar-show-year]')?.addEventListener('click', () => { calendarView = 'year'; renderCalendar(); });
+    calendar.querySelector('[data-calendar-previous]')?.addEventListener('click', () => {
+      if (calendarView === 'day') {
+        const prior = new Date(calendarYear, calendarMonth - 1, 1);
+        calendarMonth = prior.getMonth();
+        calendarYear = prior.getFullYear();
+      } else if (calendarView === 'month') calendarYear -= 1;
+      else calendarYear -= 12;
+      renderCalendar();
+    });
+    calendar.querySelector('[data-calendar-next]')?.addEventListener('click', () => {
+      if (calendarView === 'day') {
+        const next = new Date(calendarYear, calendarMonth + 1, 1);
+        if (next.getFullYear() > today.getFullYear() || (next.getFullYear() === today.getFullYear() && next.getMonth() > today.getMonth())) return;
+        calendarMonth = next.getMonth();
+        calendarYear = next.getFullYear();
+      } else if (calendarView === 'month') {
+        if (calendarYear >= today.getFullYear()) return;
+        calendarYear += 1;
+      } else {
+        if (calendarYear + 12 > today.getFullYear()) return;
+        calendarYear += 12;
+      }
+      renderCalendar();
+    });
+    calendar.querySelectorAll('[data-calendar-date]').forEach((button) => button.addEventListener('click', () => {
+      const [selectedYear, selectedMonth, selectedDay] = button.dataset.calendarDate.split('-').map(Number);
+      setSelectedDate(new Date(selectedYear, selectedMonth - 1, selectedDay));
+      calendar.classList.add('hidden');
+      calendarView = 'day';
+      dateInput.setAttribute('aria-expanded', 'false');
+      void loadSelectedDay();
+    }));
+  };
+  const loadSelectedDay = async () => {
+    const loadId = ++activityLoadId;
+    const year = selected.getFullYear();
+    const month = selected.getMonth() + 1;
+    const day = selected.getDate();
+    const start = new Date(year, month - 1, day);
+    const end = new Date(year, month - 1, day + 1);
+    const label = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+    pageContent.querySelector('[data-activity-selected-date]').textContent = `Showing activity for ${label}`;
+    const eventList = pageContent.querySelector('[data-activity-events]');
+    eventList.innerHTML = '<div class="empty-state">Loading activity…</div>';
+    try {
+      const query = `?from=${encodeURIComponent(start.toISOString())}&to=${encodeURIComponent(end.toISOString())}`;
+      const { events: statusEvents, applicationSwitches = [] } = await api(`${path}${query}`);
+      if (loadId !== activityLoadId || state.view !== 'activity' || !pageContent.contains(eventList)) return;
+      const events = combineTimelineEvents(statusEvents, applicationSwitches);
+      eventList.innerHTML = events.length ? events.map((event) => renderTimelineRow(event, true)).join('') : '<div class="empty-state">There is no recorded activity for this date.</div>';
+    } catch (error) {
+      if (loadId === activityLoadId && state.view === 'activity' && pageContent.contains(eventList)) eventList.innerHTML = `<div class="notice">${escapeHtml(error.message)}</div>`;
+    }
+  };
+  dateInput.addEventListener('click', () => {
+    const isOpen = !calendar.classList.contains('hidden');
+    calendar.classList.toggle('hidden', isOpen);
+    dateInput.setAttribute('aria-expanded', String(!isOpen));
+    if (!isOpen) {
+      calendarView = 'day';
+      calendarYear = selected.getFullYear();
+      calendarMonth = selected.getMonth();
+      renderCalendar();
+    }
+  });
+  setSelectedDate(selected);
+  await loadSelectedDay();
 }
 async function renderProfile() {
   const { user } = await api('/employee/profile');

@@ -79,6 +79,32 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
 .panel-header { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 17px; border-bottom: 1px solid var(--line); }
 .panel-header h3 { margin: 0; font: 700 13px 'Aptos Display', 'Segoe UI', sans-serif; letter-spacing: 0; }
 .panel-header p { color: var(--muted); font-size: 10px; margin: 4px 0 0; }
+.activity-filter-header { position: relative; z-index: 2; align-items: center; }
+.activity-filters { display: flex; align-items: flex-end; gap: 10px; }
+.activity-filters label, .activity-date-filter { display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.activity-date-filter { position: relative; }
+.activity-filters select, .activity-date-button { min-height: 34px; padding: 6px 9px; font-size: 11px; }
+.activity-filters select { width: 150px; }
+.activity-date-button { width: 150px; text-align: left; color: var(--ink); border: 1px solid #cfdadb; border-radius: 5px; background: #fff; }
+.activity-date-button:hover { border-color: var(--accent); }
+.activity-calendar { position: absolute; top: calc(100% + 8px); right: 0; z-index: 5; width: min(320px, calc(100vw - 40px)); padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: var(--shadow); }
+.activity-calendar-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: var(--ink); font-size: 12px; }
+.activity-calendar-title { display: flex; align-items: center; gap: 4px; }
+.activity-calendar-heading button { min-width: 30px; height: 28px; color: var(--accent-dark); border: 1px solid var(--line); border-radius: 4px; background: #fff; font-size: 18px; line-height: 1; }
+.activity-calendar-title button { padding: 0 5px; border-color: transparent; font-size: 12px; font-weight: 700; }
+.activity-calendar-heading button:hover:not(:disabled), .activity-calendar-choice:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-pale); }
+.activity-calendar-heading button:disabled { color: #aab5b7; cursor: default; }
+.activity-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; gap: 3px; }
+.activity-calendar-weekdays { margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.activity-calendar-day, .activity-calendar-empty { display: grid; width: 32px; height: 30px; place-items: center; }
+.activity-calendar-day { color: var(--ink); border: 1px solid transparent; border-radius: 4px; background: #fff; font-size: 11px; }
+.activity-calendar-day:hover:not(:disabled) { color: var(--accent-dark); border-color: var(--accent); background: var(--accent-pale); }
+.activity-calendar-day.selected { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 700; }
+.activity-calendar-day:disabled { color: #b6c0c1; cursor: default; }
+.activity-calendar-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.activity-calendar-choice { min-height: 34px; padding: 4px; color: var(--ink); border: 1px solid transparent; border-radius: 4px; background: #fff; font-size: 11px; }
+.activity-calendar-choice.selected { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 700; }
+.activity-calendar-choice:disabled { color: #b6c0c1; cursor: default; }
 .panel-body { padding: 17px; }
 .table-wrap { overflow: auto; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
@@ -145,3 +171,4 @@ tr:last-child td { border-bottom: 0; }
 @media (max-width: 900px) { .workspace { grid-template-columns: 200px minmax(0, 1fr); } .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) { .workspace { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; padding: 13px 14px; } .brand { margin: 0 4px 13px; } .nav-label, .sidebar-bottom { display: none; } #navigation { display: flex; overflow-x: auto; gap: 3px; padding-bottom: 2px; } .nav-item { flex: 0 0 auto; width: auto; min-height: 34px; padding: 0 10px; font-size: 10px; } .nav-icon { display: none; } .topbar { min-height: 68px; } .topbar h1 { font-size: 18px; } .user-menu { gap: 6px; font-size: 10px; } .role-tag { display: none; } .page-content { padding-top: 21px; } .kpi-grid { gap: 8px; } .kpi { min-height: 93px; padding: 12px; } .kpi-number { font-size: 20px; } .page-heading { align-items: flex-start; flex-direction: column; } .filters { width: 100%; } .filters input { width: 100%; } .form-grid { grid-template-columns: 1fr; } .policy-row { align-items: flex-start; flex-direction: column; } .threshold-input { width: 100%; grid-template-columns: minmax(0, 1fr) 140px; } .current-network { align-items: flex-start; flex-direction: column; } .current-network .policy-value { max-width: 100%; text-align: left; } .login-screen { padding: 33px 26px 28px; } }
 @media (max-width: 620px) { .timeline-panel { height: min(520px, max(220px, calc(100vh - 320px))); } }
+@media (max-width: 620px) { .activity-filter-header { align-items: flex-start; flex-direction: column; } .activity-filters { width: 100%; } .activity-filters label, .activity-date-filter { flex: 1; min-width: 0; } .activity-filters select, .activity-date-button { width: 100%; min-width: 0; } .activity-calendar { right: 0; } }

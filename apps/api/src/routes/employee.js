@@ -86,11 +86,22 @@ export function createEmployeeRouter({ db }) {
   });
 
   router.get('/activity', (req, res) => {
+    let range;
+    if (req.query.from !== undefined || req.query.to !== undefined) {
+      try {
+        if (req.query.from === undefined || req.query.to === undefined) throw new RangeError('Both activity range boundaries are required');
+        range = parseReportRange(req.query);
+      } catch (error) { return res.status(400).json({ error: error.message }); }
+    }
+    const rangeSql = range ? 'AND occurred_at >= ? AND occurred_at < ?' : '';
+    const rangeParams = range ? [range.start, range.end] : [];
     const events = db.prepare(`SELECT id, previous_status AS previousStatus, status, reason, occurred_at AS occurredAt
-      FROM activity_events WHERE user_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 500`).all(req.auth.userId);
+      FROM activity_events WHERE user_id = ? ${rangeSql} ORDER BY occurred_at DESC, id DESC${range ? '' : ' LIMIT 500'}`)
+      .all(req.auth.userId, ...rangeParams);
     const applicationSwitches = db.prepare(`SELECT id, previous_application AS previousApplication, previous_window_title AS previousWindowTitle,
       application, window_title AS windowTitle, occurred_at AS occurredAt FROM application_switch_events
-      WHERE user_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 500`).all(req.auth.userId);
+      WHERE user_id = ? ${rangeSql} ORDER BY occurred_at DESC, id DESC${range ? '' : ' LIMIT 500'}`)
+      .all(req.auth.userId, ...rangeParams);
     res.json({ events, applicationSwitches });
   });
   router.get('/profile', (req, res) => res.json({ user: { id: req.auth.userId, email: req.auth.email, fullName: req.auth.fullName, department: req.auth.department, designation: req.auth.designation } }));

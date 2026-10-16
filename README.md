@@ -5,7 +5,7 @@ A development foundation for transparent attendance and device-availability trac
 ## Architecture
 
 - `apps/api`: Express API, Node built-in SQLite database, bcrypt password hashes, Socket.IO, session and authorization middleware.
-- `apps/web`: responsive vanilla HTML/CSS/JavaScript views for Admin and Employee roles.
+- `apps/web`: responsive vanilla HTML/CSS/JavaScript views for Admin and Employee roles, including an in-panel activity calendar whose month and year headings open month and year selection views.
 - `apps/desktop`: Electron tray agent for Windows; reads OS idle duration and reports heartbeat state only after sign-in.
 - `packages/shared`: shared status constants and time-duration calculation helper.
 - `database/migrations`: initial relational schema, indexes, constraints, audit events.
