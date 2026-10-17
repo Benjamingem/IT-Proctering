@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getAwayPopupAction } from '@eam/shared';
 
 const apiOrigin = process.env.EAM_API_ORIGIN || 'http://localhost:3000';
+const workforceOrigin = new URL(apiOrigin).origin;
 const cookieName = 'eam_session';
 const execFileAsync = promisify(execFile);
 const activeWindowScript = resolve(dirname(fileURLToPath(import.meta.url)), 'active-window.ps1');
@@ -20,6 +21,8 @@ let applicationSwitchQueue = Promise.resolve();
 let currentStatus = 'unknown';
 let currentRole = null;
 let currentNetworkStatus = 'unknown';
+let cameraWindowShownForAwayPeriod = false;
+let cameraEligibilityCheckedForAwayPeriod = false;
 let quitting = false;
 let quitReady = false;
 let requestInFlight = false;
@@ -35,7 +38,7 @@ function stopApplicationMonitor() {
 }
 
 function reportForegroundWindow(windowInfo) {
-  if (currentRole !== 'employee' || screenLocked || !windowInfo?.application || !windowInfo?.windowTitle) return;
+  if (currentRole !== 'employee' || currentNetworkStatus !== 'matched' || screenLocked || !windowInfo?.application || !windowInfo?.windowTitle) return;
   const knownNames = { Code: 'Visual Studio Code', chrome: 'Google Chrome', msedge: 'Microsoft Edge', firefox: 'Mozilla Firefox' };
   const current = { application: knownNames[windowInfo.application] || windowInfo.application, windowTitle: windowInfo.windowTitle.trim() };
   if (!current.windowTitle) return;
@@ -49,7 +52,7 @@ function reportForegroundWindow(windowInfo) {
     ...current
   });
   applicationSwitchQueue = applicationSwitchQueue.then(async () => {
-    if (currentRole !== 'employee' || screenLocked) return;
+    if (currentRole !== 'employee' || currentNetworkStatus !== 'matched' || screenLocked) return;
     const response = await request('/api/activity/application-switch', { method: 'POST', body });
     if (!response.ok) console.error(`Application switch report failed (${response.status})`);
   }).catch((error) => console.error('Application switch report failed', error));
@@ -108,9 +111,28 @@ async function getCurrentWifiSsid() {
 function updateTray(status) {
   const popupAction = getAwayPopupAction(currentStatus, status);
   currentStatus = status;
+  if (status !== 'away') {
+    cameraWindowShownForAwayPeriod = false;
+    cameraEligibilityCheckedForAwayPeriod = false;
+  }
   tray?.setToolTip(`Ben Infotech Workforce | ${status[0].toUpperCase()}${status.slice(1)}`);
   if (popupAction === 'show') showAwayPopup();
   if (popupAction === 'close') closeAwayPopup();
+}
+async function showCameraCheckinWindowIfEligible() {
+  if (cameraEligibilityCheckedForAwayPeriod || cameraWindowShownForAwayPeriod || currentRole !== 'employee' || currentStatus !== 'away'
+    || currentNetworkStatus !== 'matched') return;
+  const response = await request('/api/employee/dashboard');
+  if (!response.ok) {
+    console.error(`Camera check-in eligibility check failed (${response.status})`);
+    return;
+  }
+  const dashboard = await response.json();
+  if (dashboard.status !== 'away' || dashboard.officeNetworkStatus !== 'matched'
+    || !dashboard.cameraPolicy?.enabled || !dashboard.cameraConsent?.enabled) return;
+  cameraEligibilityCheckedForAwayPeriod = true;
+  cameraWindowShownForAwayPeriod = true;
+  windowRef?.showInactive();
 }
 function updateAdminNetwork(status) {
   currentNetworkStatus = status;
@@ -163,10 +185,11 @@ async function reportHeartbeat() {
   requestInFlight = true;
   try {
     const response = await request('/api/auth/me');
-    if (!response.ok) { currentRole = null; stopApplicationMonitor(); updateTray('unknown'); refreshMenu(); return; }
+    if (!response.ok) { currentRole = null; currentNetworkStatus = 'unknown'; stopApplicationMonitor(); updateTray('unknown'); refreshMenu(); return; }
     const auth = await response.json();
     const networkSsid = await getCurrentWifiSsid();
     if (auth.user.role === 'admin') {
+      currentNetworkStatus = 'unknown';
       stopApplicationMonitor();
       currentRole = 'admin';
       const networkResponse = await request('/api/admin/office-networks/current-match', { method: 'POST', body: JSON.stringify({ ssid: networkSsid }) });
@@ -179,16 +202,23 @@ async function reportHeartbeat() {
       return;
     }
     currentRole = 'employee';
-    startApplicationMonitor();
     const idleSeconds = powerMonitor.getSystemIdleTime();
     const heartbeat = await request('/api/activity/heartbeat', { method: 'POST', body: JSON.stringify({ idleSeconds, locked: screenLocked, networkSsid }) });
     if (heartbeat.ok) {
       const result = await heartbeat.json();
+      currentNetworkStatus = result.officeNetworkStatus;
+      if (result.officeNetworkStatus === 'matched') startApplicationMonitor();
+      else stopApplicationMonitor();
       updateTray(result.status);
+      await showCameraCheckinWindowIfEligible();
     } else {
+      currentNetworkStatus = 'unknown';
+      stopApplicationMonitor();
       updateTray('unknown');
     }
   } catch {
+    currentNetworkStatus = 'unknown';
+    stopApplicationMonitor();
     updateTray('unknown');
   } finally {
     requestInFlight = false;
@@ -214,6 +244,16 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const isWorkforceWindow = windowRef && webContents === windowRef.webContents;
+    const isCameraRequest = permission === 'media'
+      && details.isMainFrame
+      && details.mediaTypes?.length === 1
+      && details.mediaTypes.includes('video');
+    let isWorkforceOrigin = false;
+    try { isWorkforceOrigin = new URL(details.requestingUrl).origin === workforceOrigin; } catch {}
+    callback(Boolean(isWorkforceWindow && isCameraRequest && isWorkforceOrigin));
+  });
   if (process.platform === 'win32' && process.env.EAM_ENABLE_STARTUP === '1') {
     app.setLoginItemSettings({ openAtLogin: true });
   }

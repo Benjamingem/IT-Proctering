@@ -23,6 +23,15 @@ The development database uses Node's built-in `node:sqlite`; use Node 22.13 or n
    ```
 
 3. Create `.env` from `.env.example`, then set a unique admin email and a strong password of at least 12 characters. Do not commit `.env`.
+   Generate a persistent encryption key for optional camera check-ins in PowerShell:
+
+   ```powershell
+   $bytes = New-Object byte[] 32
+   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+   [Convert]::ToBase64String($bytes)
+   ```
+
+   Put the resulting base64 value in `CAMERA_STORAGE_KEY` in `.env`. Keep it secret and back it up securely; changing or losing it makes previously stored photos unreadable. Do not print it in logs or commit it.
 4. Create the first administrator:
 
    ```powershell
@@ -58,24 +67,26 @@ The integration test covers invalid credentials, Admin/Employee login, account c
 
 ## Privacy and Boundaries
 
-- The camera is disabled by default. This foundation has no camera capture implementation or camera permission flow, and its UI does not offer an enable control.
-- No screenshots, video, audio, typed content, clipboard data, or synthetic activity are collected or generated.
+- Optional camera check-ins are disabled by default and require both Admin enablement and explicit, revocable employee consent. On a current exact approved office Wi-Fi match, one still photo may be taken per Away period after a five-second visible countdown; the employee can cancel. The camera-active indicator and preview remain visible during capture. No audio or continuous video is captured.
+- Photos are AES-256-GCM encrypted in the database, accessible only to the employee and authorized Admins, and automatically deleted after 30 days. Image access is audited. The encryption key must remain stable and backed up securely; rotating it requires re-encrypting existing photos first.
+- This optional photo is a check-in record, not an emergency-response system, proof of absence, or reliable way to detect a collapse. It cannot guarantee that anyone will see or respond to a photo.
+- No screenshots, saved video, typed content, clipboard data, or synthetic activity are collected or generated.
 - Available means recent OS-reported user interaction, not productive or verified work time.
 - Dashboard daily totals use the viewer's device-local midnight; interaction durations refresh every minute and all dashboard data reloads at midnight. A heartbeat gap closes Available or Away time after the 45-second stale timeout, including after a server restart. Report ranges are separate from this dashboard day boundary.
-- The Windows desktop agent reports OS idle duration every 15 seconds and records foreground application/window-title changes for Employee sessions. Window titles may reveal webpage or document names. Browser employee sessions report every five seconds using activity in that tab only; repetitive click and pointer-direction patterns lasting at least five seconds are marked Away by a deterministic local heuristic. The browser does not monitor other apps, and no typed content, raw coordinates, or click targets are sent or persisted. System suspend stops desktop heartbeats. On network loss, the server marks stale sessions Offline after 45 seconds; after reconnect, only the current state is recorded. Exact transitions during the outage cannot be reconstructed.
-- Admins can maintain an exact-match office SSID allowlist. The Windows agent reports the connected SSID; the Admin dashboard shows match status. SSID names are not secure proof of device identity, and this match does not enable camera access. A company-managed network-verification method, leave/shift workflows, scheduled reports, password reset/invitation links, PostgreSQL, and production deployment controls remain unimplemented.
+- The Windows desktop agent reports OS idle duration every 15 seconds and records foreground application/window-title changes for Employee sessions only while its reported SSID exactly matches an active office allowlist entry. Without a match, including when no SSID is reported, the session is marked Offline and activity details are not recorded. Browser-only employee sessions cannot report Wi-Fi and remain Offline; use the Windows desktop agent for office-only monitoring. Window titles may reveal webpage or document names. No typed content, raw coordinates, or click targets are sent or persisted. System suspend stops desktop heartbeats. On network loss, the next heartbeat marks the session Offline; if heartbeats stop entirely, the server marks stale sessions Offline after 45 seconds. After reconnect, only the current state is recorded. Exact transitions during an outage cannot be reconstructed.
+- Admins can maintain an exact-match office SSID allowlist. The Windows agent reports the connected SSID; the Admin dashboard shows match status. SSID names are not secure proof of device identity and can be spoofed, so this is an informational monitoring gate, not a security boundary. Camera check-ins require a current matched approved SSID, employee consent, administrator enablement, and operating-system camera permission. A company-managed network-verification method, leave/shift workflows, scheduled reports, password reset/invitation links, PostgreSQL, and production deployment controls remain unimplemented.
 - The endpoint trusts idle seconds reported by the signed-in desktop process; this is not a tamper-proof endpoint-management attestation system.
 
 ## Windows Verification
 
-Run the desktop app on supported Windows 10/11 devices and verify OS idle readings, lock/unlock, sleep/wake, tray persistence, user-selected startup behavior, `netsh wlan show interfaces` SSID parsing, network loss/reconnect, and session closure. Electron `powerMonitor` provides OS idle time; no Windows input hooks or content capture are used. The agent has not been verified against every Windows build or endpoint-management policy.
+Run the desktop app on supported Windows 10/11 devices and verify OS idle readings, lock/unlock, sleep/wake, tray persistence, user-selected startup behavior, `netsh wlan show interfaces` SSID parsing, network loss/reconnect, session closure, and camera consent/countdown/cancel/permission behavior on an approved SSID. Electron `powerMonitor` provides OS idle time; no Windows input hooks or content capture are used. The agent has not been verified against every Windows build or endpoint-management policy.
 
 ## Office Wi-Fi Setup
 
-1. Sign in as Admin using the desktop app to let that machine report its current SSID, or read the SSID from Windows Wi-Fi settings.
+1. Sign in as Admin using the desktop app to let that machine report its current SSID, or read the SSID from Windows Wi-Fi settings. A browser-only Admin session cannot report the current Wi-Fi.
 2. Open Policies and add the exact SSID string as shown by Windows. SSIDs are matched exactly, including capitalization.
-3. Keep the Employee desktop agent running. The Admin dashboard shows each reporting device's last SSID and whether it matches the allowlist.
+3. Keep the Employee desktop agent running. Availability and foreground-app monitoring are recorded only while its reported SSID exactly matches an active allowlist entry. The Admin dashboard shows each reporting device's last SSID and whether it matches the allowlist.
 
-This confirms only the reported Wi-Fi name. SSIDs can be copied or spoofed; do not use this result as a security boundary. Camera capture remains disabled regardless of a match.
+This confirms only the reported Wi-Fi name. SSIDs can be copied or spoofed; do not use this result as a security boundary. A current match is required before an opted-in, Admin-enabled employee can receive the disclosed one-photo check-in; it is not continuous camera monitoring.
 
 Before organizational deployment, add HTTPS, backup/retention controls, invitation and password reset workflows, endpoint identity/attestation as appropriate, and security review. The bundled SQLite database is intended only for local development.

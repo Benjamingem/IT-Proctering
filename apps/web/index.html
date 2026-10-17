@@ -19,7 +19,14 @@
         <label for="email">Work email</label>
         <input id="email" name="email" type="email" autocomplete="username" required maxlength="254">
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <div class="password-input-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button class="password-toggle" type="button" aria-label="Show password" aria-pressed="false">👁</button>
+        </div>
+        <div class="password-strength" aria-live="polite">
+          <div class="password-meter"><span class="password-meter-fill"></span></div>
+          <span class="password-strength-label"></span>
+        </div>
         <p class="form-error" id="login-error" role="alert"></p>
         <button class="button button-primary" type="submit">Sign in</button>
       </form>

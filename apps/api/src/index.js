@@ -12,6 +12,7 @@ import { createAdminRouter } from './routes/admin.js';
 import { createEmployeeRouter } from './routes/employee.js';
 import { createActivityRouter } from './routes/activity.js';
 import { HEARTBEAT_STALE_THRESHOLD_MS } from '@eam/shared';
+import { purgeExpiredCameraCheckins } from './services/camera-checkins.js';
 
 const app = express();
 const server = createServer(app);
@@ -55,11 +56,14 @@ io.use((socket, next) => {
   next();
 });
 io.on('connection', (socket) => {
-  socket.join(socket.data.role === 'admin' ? 'admins' : `user:${socket.data.userId}`);
+  socket.join(socket.data.role === 'admin' ? 'admins' : ['employees', `user:${socket.data.userId}`]);
 });
 
 const port = Number(process.env.PORT || 3000);
 if (process.env.NODE_ENV !== 'test') {
+  purgeExpiredCameraCheckins(db);
+  const cameraRetentionTimer = setInterval(() => purgeExpiredCameraCheckins(db), 60 * 60 * 1000);
+  cameraRetentionTimer.unref();
   const staleTimer = setInterval(() => {
     const observedAt = new Date().toISOString();
     const cutoff = new Date(Date.now() - HEARTBEAT_STALE_THRESHOLD_MS).toISOString();

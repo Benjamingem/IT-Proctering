@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { createCsv, parseDashboardDayStart, parseReportRange, summarizeActivity } from '../services/activity-summary.js';
+import { decryptCameraImage, getCameraStorageKey, purgeExpiredCameraCheckins } from '../services/camera-checkins.js';
 
 const now = () => new Date().toISOString();
 const employeeInput = z.object({
@@ -93,6 +94,34 @@ export function createAdminRouter({ db, io }) {
       AND (? = '' OR department = ?) ORDER BY full_name COLLATE NOCASE LIMIT ? OFFSET ?`)
       .all(search, `%${search}%`, `%${search}%`, department, department, pageSize, (page - 1) * pageSize);
     res.json({ employees: rows, page, pageSize });
+  });
+
+  router.get('/employees/:id/camera-checkins', (req, res) => {
+    const employeeId = Number(req.params.id);
+    if (!Number.isInteger(employeeId)) return res.status(400).json({ error: 'Invalid employee id' });
+    if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND role = 'employee'").get(employeeId)) return res.status(404).json({ error: 'Employee not found' });
+    purgeExpiredCameraCheckins(db);
+    const checkins = db.prepare(`SELECT id, captured_at AS capturedAt FROM employee_camera_checkins
+      WHERE user_id = ? ORDER BY captured_at DESC LIMIT 500`).all(employeeId);
+    res.json({ checkins });
+  });
+
+  router.get('/employees/:id/camera-checkins/:checkinId/image', (req, res, next) => {
+    try {
+      const employeeId = Number(req.params.id);
+      const checkinId = Number(req.params.checkinId);
+      if (!Number.isInteger(employeeId) || !Number.isInteger(checkinId)) return res.status(400).json({ error: 'Invalid camera check-in id' });
+      if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND role = 'employee'").get(employeeId)) return res.status(404).json({ error: 'Employee not found' });
+      purgeExpiredCameraCheckins(db);
+      const checkin = db.prepare(`SELECT id, activity_event_id AS activityEventId, encrypted_image AS encryptedImage
+        FROM employee_camera_checkins WHERE id = ? AND user_id = ?`).get(checkinId, employeeId);
+      if (!checkin) return res.status(404).json({ error: 'Camera check-in not found or expired' });
+      const image = decryptCameraImage(checkin.encryptedImage, employeeId, checkin.activityEventId);
+      db.prepare('INSERT INTO audit_logs (actor_user_id, action, target_user_id, details, occurred_at) VALUES (?, ?, ?, ?, ?)')
+        .run(req.auth.userId, 'camera_checkin.viewed', employeeId, JSON.stringify({ checkinId }), now());
+      res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.send(image);
+    } catch (error) { next(error); }
   });
 
   router.post('/employees', async (req, res, next) => {
@@ -229,12 +258,13 @@ export function createAdminRouter({ db, io }) {
 
   router.get('/policies', (_req, res) => {
     const policy = db.prepare('SELECT idle_threshold_seconds AS idleThresholdSeconds, camera_enabled AS cameraEnabled, camera_requires_office_network AS cameraRequiresOfficeNetwork, organization_timezone AS organizationTimezone FROM application_settings WHERE id = 1').get();
-    res.json({ ...policy, cameraEnabled: Boolean(policy.cameraEnabled), cameraRequiresOfficeNetwork: Boolean(policy.cameraRequiresOfficeNetwork) });
+    res.json({ ...policy, cameraEnabled: Boolean(policy.cameraEnabled), cameraRequiresOfficeNetwork: Boolean(policy.cameraRequiresOfficeNetwork), cameraStorageReady: Boolean(getCameraStorageKey()) });
   });
 
   router.patch('/policies', (req, res) => {
-    const parsed = z.object({ idleThresholdSeconds: z.number().int().min(1).max(3600).optional(), cameraEnabled: z.literal(false).optional(), cameraRequiresOfficeNetwork: z.boolean().optional(), organizationTimezone: z.string().min(1).max(80).optional() }).strict().safeParse(req.body);
+    const parsed = z.object({ idleThresholdSeconds: z.number().int().min(1).max(3600).optional(), cameraEnabled: z.boolean().optional(), cameraRequiresOfficeNetwork: z.literal(true).optional(), organizationTimezone: z.string().min(1).max(80).optional() }).strict().safeParse(req.body);
     if (!parsed.success || Object.keys(parsed.data).length === 0) return res.status(400).json({ error: 'Invalid policy update' });
+    if (parsed.data.cameraEnabled === true && !getCameraStorageKey()) return res.status(503).json({ error: 'Configure CAMERA_STORAGE_KEY with a base64-encoded 32-byte key before enabling camera check-ins' });
     const columns = { idleThresholdSeconds: 'idle_threshold_seconds', cameraEnabled: 'camera_enabled', cameraRequiresOfficeNetwork: 'camera_requires_office_network', organizationTimezone: 'organization_timezone' };
     const entries = Object.entries(parsed.data);
     db.prepare(`UPDATE application_settings SET ${entries.map(([key]) => `${columns[key]} = ?`).join(', ')} WHERE id = 1`)
@@ -243,6 +273,7 @@ export function createAdminRouter({ db, io }) {
     db.prepare('INSERT INTO audit_logs (actor_user_id, action, details, occurred_at) VALUES (?, ?, ?, ?)')
       .run(req.auth.userId, 'policy.updated', JSON.stringify(parsed.data), occurredAt);
     io.to('admins').emit('policy:updated', parsed.data);
+    if (typeof parsed.data.cameraEnabled === 'boolean') io.to('employees').emit('policy:updated', parsed.data);
     res.json({ updated: true });
   });
 

@@ -30,6 +30,7 @@ before(async () => {
   temporaryDirectory = mkdtempSync(join(tmpdir(), 'eam-api-'));
   process.env.NODE_ENV = 'test';
   process.env.DATABASE_PATH = join(temporaryDirectory, 'test.sqlite');
+  process.env.CAMERA_STORAGE_KEY = Buffer.alloc(32, 7).toString('base64');
   ({ server, io } = await import('../apps/api/src/index.js'));
   ({ db } = await import('../apps/api/src/db.js'));
   const passwordHash = await bcrypt.hash('Admin-password-for-tests-42!', 4);
@@ -106,7 +107,7 @@ test('browser activity tracker detects repetitive clicks, motion, and long press
 });
 
 test('authentication, role isolation, activity transitions, realtime delivery, and logout', async () => {
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count, 7);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count, 8);
   const invalid = await login('admin@test.local', 'wrong-password');
   assert.equal(invalid.response.status, 401);
 
@@ -150,6 +151,7 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.equal(employeeLogin.response.status, 200);
   employeeCookie = employeeLogin.cookie;
   const employeeId = db.prepare('SELECT id FROM users WHERE email = ?').get(employeePayload.email).id;
+  const employeeSessionId = db.prepare('SELECT id FROM auth_sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1').get(employeeId).id;
   const utcDayStart = new Date();
   utcDayStart.setUTCHours(0, 0, 0, 0);
   const priorSessionStart = new Date(utcDayStart.getTime() - 2 * 60 * 60 * 1000).toISOString();
@@ -159,13 +161,17 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   db.prepare(`INSERT INTO activity_events (user_id, auth_session_id, previous_status, status, reason, occurred_at)
     VALUES (?, ?, 'unknown', 'available', 'test_prior_day_status', ?)`)
     .run(employeeId, priorSession.lastInsertRowid, new Date(utcDayStart.getTime() - 30 * 60 * 1000).toISOString());
-  const applicationSwitchResponse = await api('/activity/application-switch', employeeCookie, { method: 'POST', body: JSON.stringify({
+  const lastActivityBeforeNoOffice = db.prepare('SELECT last_activity_at AS lastActivityAt FROM auth_sessions WHERE id = ?').get(employeeSessionId).lastActivityAt;
+  const noOfficeHeartbeat = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 0 }) });
+  const noOfficeData = await noOfficeHeartbeat.json();
+  assert.equal(noOfficeData.status, 'offline');
+  assert.equal(noOfficeData.officeNetworkStatus, 'unknown');
+  assert.equal(db.prepare('SELECT last_activity_at AS lastActivityAt FROM auth_sessions WHERE id = ?').get(employeeSessionId).lastActivityAt, lastActivityBeforeNoOffice);
+  const offNetworkApplicationSwitch = await api('/activity/application-switch', employeeCookie, { method: 'POST', body: JSON.stringify({
     previousApplication: 'Code', previousWindowTitle: 'main.js - Visual Studio Code', application: 'chrome', windowTitle: 'YouTube\n - Google Chrome'
   }) });
-  assert.equal(applicationSwitchResponse.status, 201);
-  const applicationSwitch = (await applicationSwitchResponse.json()).event;
-  assert.equal(applicationSwitch.previousApplication, 'Code');
-  assert.equal(applicationSwitch.windowTitle, 'YouTube - Google Chrome');
+  assert.equal(offNetworkApplicationSwitch.status, 204);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM application_switch_events WHERE auth_session_id = ?').get(employeeSessionId).count, 0);
   const clientSessionId = '41b5d202-142c-4380-aa91-bfd56b11a400';
   const attendanceStart = await api('/employee/attendance/start', employeeCookie, { method: 'POST', body: JSON.stringify({ clientSessionId }) });
   assert.equal(attendanceStart.status, 201);
@@ -178,11 +184,11 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.equal(employeeDashboardAtLogin.attendanceStartedAt, attendanceStartData.startedAt);
   assert.equal(employeeDashboardAtLogin.availableInteractionMs, 0);
   assert.equal(employeeDashboardAtLogin.awayDurationMs, 0);
-  assert.equal(employeeDashboardAtLogin.applicationSwitches[0].application, 'chrome');
+  assert.equal(employeeDashboardAtLogin.applicationSwitches.length, 0);
   const priorDayDashboard = await (await api(`/employee/dashboard?dayStart=${encodeURIComponent(new Date(utcDayStart.getTime() - 60 * 60 * 1000).toISOString())}`, employeeCookie)).json();
   assert.ok(priorDayDashboard.events.some((event) => event.occurredAt === new Date(utcDayStart.getTime() - 30 * 60 * 1000).toISOString()));
   assert.equal((await api('/employee/dashboard?dayStart=invalid', employeeCookie)).status, 400);
-  assert.equal((await (await api('/employee/activity', employeeCookie)).json()).applicationSwitches.length, 1);
+  assert.equal((await (await api('/employee/activity', employeeCookie)).json()).applicationSwitches.length, 0);
   const afterLogin = await (await api('/admin/dashboard', adminCookie)).json();
   assert.equal(afterLogin.kpis.presentToday, 1);
   assert.equal(afterLogin.kpis.absentToday, 0);
@@ -204,6 +210,13 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   const available = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 0, networkSsid: 'Northstar-Office' }) });
   assert.equal(available.status, 200);
   assert.equal((await available.json()).status, 'available');
+  const applicationSwitchResponse = await api('/activity/application-switch', employeeCookie, { method: 'POST', body: JSON.stringify({
+    previousApplication: 'Code', previousWindowTitle: 'main.js - Visual Studio Code', application: 'chrome', windowTitle: 'YouTube\n - Google Chrome'
+  }) });
+  assert.equal(applicationSwitchResponse.status, 201);
+  const applicationSwitch = (await applicationSwitchResponse.json()).event;
+  assert.equal(applicationSwitch.previousApplication, 'Code');
+  assert.equal(applicationSwitch.windowTitle, 'YouTube - Google Chrome');
   assert.ok((await (await api('/employee/dashboard', employeeCookie)).json()).availableInteractionMs < 60_000);
   assert.ok((await (await api('/admin/dashboard', adminCookie)).json()).kpis.activeInteractionMs < 60_000);
   const realtimeEvent = await transitionNotice;
@@ -212,24 +225,26 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.ok(Number.isFinite(Date.parse(realtimeEvent.occurredAt)));
   assert.ok(Number.isFinite(Date.parse((await heartbeatNotice).lastHeartbeatAt)));
 
-  const availableDuplicate = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 1, networkSsid: 'northstar-office' }) });
+  const availableDuplicate = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 1, networkSsid: 'Northstar-Office' }) });
   assert.equal((await availableDuplicate.json()).status, 'available');
   const locked = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 1, locked: true, networkSsid: 'Northstar-Office' }) });
   assert.equal((await locked.json()).status, 'away');
   const unlocked = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 0, locked: false, networkSsid: 'Northstar-Office' }) });
   assert.equal((await unlocked.json()).status, 'available');
-  const repetitive = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 5, repetitiveInput: true }) });
+  const repetitive = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 5, repetitiveInput: true, networkSsid: 'Northstar-Office' }) });
   assert.equal((await repetitive.json()).status, 'away');
-  const recovered = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 0, repetitiveInput: false }) });
+  const recovered = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 0, repetitiveInput: false, networkSsid: 'Northstar-Office' }) });
   assert.equal((await recovered.json()).status, 'available');
   const away = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 60, networkSsid: 'Guest-WiFi' }) });
-  assert.equal((await away.json()).status, 'away');
+  assert.equal((await away.json()).status, 'offline');
   const awayAgain = await api('/activity/heartbeat', employeeCookie, { method: 'POST', body: JSON.stringify({ idleSeconds: 90, networkSsid: 'Guest-WiFi' }) });
-  assert.equal((await awayAgain.json()).officeNetworkStatus, 'not_matched');
+  const awayAgainData = await awayAgain.json();
+  assert.equal(awayAgainData.status, 'offline');
+  assert.equal(awayAgainData.officeNetworkStatus, 'not_matched');
 
   const timeline = await (await api('/employee/activity', employeeCookie)).json();
-  assert.deepEqual(timeline.events.map((event) => event.status), ['away', 'available', 'away', 'available', 'away', 'available', 'unknown', 'available']);
-  assert.equal(timeline.events[0].reason, 'os_idle_threshold');
+  assert.deepEqual(timeline.events.map((event) => event.status), ['offline', 'available', 'away', 'available', 'away', 'available', 'offline', 'unknown', 'available']);
+  assert.equal(timeline.events[0].reason, 'office_network_required');
   assert.equal(timeline.events[2].reason, 'repetitive_input_pattern');
   assert.equal(timeline.events[4].reason, 'screen_locked');
   assert.equal(timeline.events.at(-1).reason, 'test_prior_day_status');
@@ -241,11 +256,13 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.equal(filteredTimeline.applicationSwitches.length, 1);
   assert.equal((await api(`/employee/activity?from=${encodeURIComponent(utcDayStart.toISOString())}`, employeeCookie)).status, 400);
   const employeeDashboard = await (await api('/employee/dashboard', employeeCookie)).json();
-  assert.equal(Date.parse(employeeDashboard.session.lastHeartbeatAt) - Date.parse(employeeDashboard.lastActivityAt), 90_000);
+  assert.equal(employeeDashboard.status, 'offline');
+  assert.equal(employeeDashboard.officeNetworkStatus, 'not_matched');
+  assert.ok(Date.parse(employeeDashboard.session.lastHeartbeatAt) >= Date.parse(employeeDashboard.lastActivityAt));
 
   const dashboard = await (await api('/admin/dashboard', adminCookie)).json();
-  assert.equal(dashboard.kpis.away, 1);
-  assert.equal(dashboard.employees[0].status, 'away');
+  assert.equal(dashboard.kpis.away, 0);
+  assert.equal(dashboard.employees[0].status, 'offline');
   assert.equal(dashboard.employees[0].lastNetworkSsid, 'Guest-WiFi');
   assert.equal(dashboard.employees[0].officeNetworkStatus, 'not_matched');
   assert.equal((await api('/admin/reports', employeeCookie)).status, 403);
@@ -253,9 +270,9 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   const range = `?from=${encodeURIComponent(new Date(Date.now() - 3600000).toISOString())}&to=${encodeURIComponent(new Date(Date.now() + 60000).toISOString())}`;
   const adminReport = await (await api(`/admin/reports${range}`, adminCookie)).json();
   assert.equal(adminReport.employees.length, 1);
-  assert.equal(adminReport.employees[0].awaySessions, 3);
+  assert.equal(adminReport.employees[0].awaySessions, 2);
   const employeeReport = await (await api(`/employee/reports${range}`, employeeCookie)).json();
-  assert.equal(employeeReport.report.awaySessions, 3);
+  assert.equal(employeeReport.report.awaySessions, 2);
   const csv = await api(`/admin/reports.csv${range}`, adminCookie);
   assert.equal(csv.headers.get('content-type').includes('text/csv'), true);
   assert.match(await csv.text(), /Available interaction minutes/);
@@ -264,7 +281,66 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
   assert.equal((await (await api('/admin/policies', adminCookie)).json()).idleThresholdSeconds, 90);
   assert.equal((await api('/admin/policies', adminCookie, { method: 'PATCH', body: JSON.stringify({ idleThresholdSeconds: 3601 }) })).status, 400);
   const cameraEnable = await api('/admin/policies', adminCookie, { method: 'PATCH', body: JSON.stringify({ cameraEnabled: true }) });
-  assert.equal(cameraEnable.status, 400);
+  assert.equal(cameraEnable.status, 200);
+  const enabledCameraPolicy = await (await api('/admin/policies', adminCookie)).json();
+  assert.equal(enabledCameraPolicy.cameraEnabled, true);
+  assert.equal(enabledCameraPolicy.cameraRequiresOfficeNetwork, true);
+  assert.equal(enabledCameraPolicy.cameraStorageReady, true);
+  const employeeCameraPolicy = await (await api('/employee/dashboard', employeeCookie)).json();
+  assert.equal(employeeCameraPolicy.cameraPolicy.enabled, true);
+  assert.equal(employeeCameraPolicy.cameraPolicy.requiresOfficeNetwork, true);
+  assert.equal((await api('/admin/policies', adminCookie, { method: 'PATCH', body: JSON.stringify({ cameraRequiresOfficeNetwork: false }) })).status, 400);
+  const cameraConsent = await api('/employee/camera-consent', employeeCookie, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: true, consentVersion: 'camera-checkin-2026-10-17-v1' })
+  });
+  assert.equal((await cameraConsent.json()).enabled, true);
+  const disallowedNetworkCapture = await api('/activity/camera-checkins', employeeCookie, {
+    method: 'POST', body: Buffer.from([0xff, 0xd8, 0xff, 0x01, 0xff, 0xd9]), headers: { 'Content-Type': 'image/jpeg' }
+  });
+  assert.equal(disallowedNetworkCapture.status, 403);
+  assert.equal((await api('/activity/heartbeat', employeeCookie, {
+    method: 'POST',
+    body: JSON.stringify({ idleSeconds: 0, locked: false, networkSsid: 'Northstar-Office' })
+  })).status, 200);
+  assert.equal((await (await api('/activity/heartbeat', employeeCookie, {
+    method: 'POST',
+    body: JSON.stringify({ idleSeconds: 0, locked: true, networkSsid: 'Northstar-Office' })
+  })).json()).status, 'away');
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02, 0xff, 0xd9]);
+  const savedCheckin = await api('/activity/camera-checkins', employeeCookie, { method: 'POST', body: jpeg, headers: { 'Content-Type': 'image/jpeg' } });
+  assert.equal(savedCheckin.status, 201);
+  const savedCheckinData = await savedCheckin.json();
+  assert.equal(savedCheckinData.captured, true);
+  assert.notDeepEqual(db.prepare('SELECT encrypted_image FROM employee_camera_checkins WHERE id = ?').get(savedCheckinData.checkin.id).encrypted_image, jpeg);
+  const cameraDashboard = await (await api('/employee/dashboard', employeeCookie)).json();
+  assert.equal(cameraDashboard.currentAwayCheckin.id, savedCheckinData.checkin.id);
+  const cameraTimelineRange = `?from=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}&to=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`;
+  const cameraTimeline = await (await api(`/employee/activity${cameraTimelineRange}`, employeeCookie)).json();
+  assert.equal(cameraTimeline.cameraCheckins.length, 1);
+  const duplicateCheckin = await api('/activity/camera-checkins', employeeCookie, { method: 'POST', body: jpeg, headers: { 'Content-Type': 'image/jpeg' } });
+  assert.equal((await duplicateCheckin.json()).captured, false);
+  const employeeCheckins = await (await api('/employee/camera-checkins', employeeCookie)).json();
+  assert.equal(employeeCheckins.checkins.length, 1);
+  const employeeImage = await api(`/employee/camera-checkins/${savedCheckinData.checkin.id}/image`, employeeCookie);
+  assert.equal(employeeImage.headers.get('cache-control'), 'private, no-store');
+  assert.deepEqual(Buffer.from(await employeeImage.arrayBuffer()), jpeg);
+  const adminCheckins = await (await api(`/admin/employees/${employeeId}/camera-checkins`, adminCookie)).json();
+  assert.equal(adminCheckins.checkins.length, 1);
+  const adminImage = await api(`/admin/employees/${employeeId}/camera-checkins/${savedCheckinData.checkin.id}/image`, adminCookie);
+  assert.deepEqual(Buffer.from(await adminImage.arrayBuffer()), jpeg);
+  assert.equal((await api(`/admin/employees/${employeeId}/camera-checkins/${savedCheckinData.checkin.id}/image`, employeeCookie)).status, 403);
+  db.prepare('UPDATE employee_camera_checkins SET captured_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(), savedCheckinData.checkin.id);
+  assert.equal((await (await api('/employee/camera-checkins', employeeCookie)).json()).checkins.length, 0);
+  assert.equal((await api(`/employee/camera-checkins/${savedCheckinData.checkin.id}/image`, employeeCookie)).status, 404);
+  const cameraRevoked = await api('/employee/camera-consent', employeeCookie, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled: false, consentVersion: 'camera-checkin-2026-10-17-v1' })
+  });
+  assert.equal((await cameraRevoked.json()).enabled, false);
+  assert.equal((await api('/activity/camera-checkins', employeeCookie, { method: 'POST', body: jpeg, headers: { 'Content-Type': 'image/jpeg' } })).status, 403);
+  assert.equal((await api('/admin/policies', adminCookie, { method: 'PATCH', body: JSON.stringify({ cameraEnabled: false }) })).status, 200);
 
   assert.equal((await api('/auth/logout', employeeCookie, { method: 'POST' })).status, 204);
   assert.equal((await api('/employee/dashboard', employeeCookie)).status, 401);
@@ -297,6 +373,10 @@ test('authentication, role isolation, activity transitions, realtime delivery, a
 });
 
 test('a long heartbeat gap stops carried-forward dashboard duration after the stale timeout', async () => {
+  assert.equal((await api('/admin/office-networks', adminCookie, {
+    method: 'POST',
+    body: JSON.stringify({ label: 'Head Office', ssid: 'Northstar-Office' })
+  })).status, 201);
   const employee = { fullName: 'Stale Session Employee', email: 'stale-session@example.test', temporaryPassword: 'Temporary-password-42!' };
   const created = await api('/admin/employees', adminCookie, { method: 'POST', body: JSON.stringify(employee) });
   assert.equal(created.status, 201);
@@ -314,7 +394,7 @@ test('a long heartbeat gap stops carried-forward dashboard duration after the st
 
   const heartbeat = await api('/activity/heartbeat', employeeLogin.cookie, {
     method: 'POST',
-    body: JSON.stringify({ idleSeconds: 0 })
+    body: JSON.stringify({ idleSeconds: 0, networkSsid: 'Northstar-Office' })
   });
   assert.equal((await heartbeat.json()).status, 'available');
   const offlineEvent = db.prepare(`SELECT occurred_at AS occurredAt FROM activity_events
