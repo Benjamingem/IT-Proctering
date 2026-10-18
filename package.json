@@ -10,7 +10,6 @@
     "packages/shared"
   ],
   "scripts": {
-    "postinstall": "node node_modules/electron/install.js",
     "dev": "npm run dev --workspace @eam/api",
     "start": "npm run start --workspace @eam/api",
     "desktop": "npm run start --workspace @eam/desktop",

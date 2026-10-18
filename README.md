@@ -55,7 +55,7 @@ The development database uses Node's built-in `node:sqlite`; use Node 22.13 or n
 
 To build a Windows portable ZIP, run `npm run build:desktop`. Extract it to a managed location and deploy it through authorized endpoint-management tooling. This starter does not build an installer or auto-enable startup.
 
-The root `postinstall` script downloads the Electron runtime required by the desktop app. The web/API can be run without launching Electron.
+When Electron is installed for the desktop workspace, its package install lifecycle downloads the runtime. Web/API deployments do not need Electron.
 
 ## Verification
 
