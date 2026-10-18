@@ -57,6 +57,17 @@ To build a Windows portable ZIP, run `npm run build:desktop`. Extract it to a ma
 
 When Electron is installed for the desktop workspace, its package install lifecycle downloads the runtime. Web/API deployments do not need Electron.
 
+## Deploy to Render
+
+This app uses a long-running Express server, Socket.IO, and SQLite, so it must run on a persistent Node service rather than a serverless function platform. The included `render.yaml` configures a Render web service with a persistent disk for the database.
+
+1. In Render, create a new Blueprint and select this GitHub repository. Render reads `render.yaml` and creates the service. The configured persistent disk requires a paid instance.
+2. Wait for the service to finish deploying, then add `SEED_ADMIN_EMAIL` and a unique `SEED_ADMIN_PASSWORD` (at least 12 characters) as environment variables in the Render service settings. Do not use the example credentials.
+3. Open the service Shell and run `npm run seed:admin` once to create the first administrator. The seed command fails safely if that email already exists.
+4. Open the service's `onrender.com` URL and sign in. Configure the Windows desktop agent's `EAM_API_ORIGIN` to that same HTTPS origin.
+
+The SQLite database is stored on the mounted disk at `/var/data/activity-monitor.sqlite` and survives service restarts. Keep the disk attached, and arrange secure backups. Do not deploy this SQLite/Socket.IO configuration as a Vercel Function; Vercel's serverless runtime does not provide the persistent server and disk this app requires.
+
 ## Verification
 
 ```powershell
