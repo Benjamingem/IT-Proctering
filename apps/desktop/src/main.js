@@ -1,15 +1,18 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, powerMonitor, screen, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, powerMonitor, screen, session } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getAwayPopupAction } from '@eam/shared';
 
 const apiOrigin = process.env.EAM_API_ORIGIN || 'http://localhost:3000';
-const workforceOrigin = new URL(apiOrigin).origin;
 const cookieName = 'eam_session';
 const execFileAsync = promisify(execFile);
-const activeWindowScript = resolve(dirname(fileURLToPath(import.meta.url)), 'active-window.ps1');
+const desktopDirectory = dirname(fileURLToPath(import.meta.url));
+const activeWindowScript = resolve(desktopDirectory, 'active-window.ps1');
+const desktopPagePath = resolve(desktopDirectory, 'desktop.html');
+const desktopPageUrl = pathToFileURL(desktopPagePath).href;
+const cameraConsentVersion = 'camera-checkin-2026-10-17-v1';
 let windowRef;
 let tray;
 let awayPopup;
@@ -99,6 +102,121 @@ async function request(path, options = {}) {
     headers: { Cookie: `${cookieName}=${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
   });
 }
+async function readJsonResponse(response) {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+function assertDesktopRenderer(event) {
+  if (windowRef?.webContents !== event.sender) throw new Error('Desktop app request rejected');
+}
+function publishStatus(extra = {}) {
+  if (!windowRef?.isDestroyed()) {
+    windowRef.webContents.send('desktop:status', {
+      status: currentStatus,
+      officeNetworkStatus: currentNetworkStatus,
+      role: currentRole,
+      ...extra
+    });
+  }
+}
+async function clearSessionCookie() {
+  await session.defaultSession.cookies.remove(apiOrigin, cookieName);
+}
+function registerDesktopIpc() {
+  ipcMain.handle('desktop:login', async (event, credentials) => {
+    assertDesktopRenderer(event);
+    if (typeof credentials?.email !== 'string' || typeof credentials?.password !== 'string'
+      || !credentials.email.trim() || !credentials.password) {
+      throw new Error('Enter your work email and password.');
+    }
+    const response = await fetch(new URL('/api/auth/login', apiOrigin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: credentials.email.trim(), password: credentials.password })
+    });
+    const data = await readJsonResponse(response);
+    const cookieHeader = response.headers.getSetCookie?.().find((cookie) => cookie.startsWith(`${cookieName}=`));
+    const token = cookieHeader?.match(new RegExp(`^${cookieName}=([^;]+)`))?.[1];
+    if (!token) throw new Error('The server did not establish a sign-in session.');
+    const expires = cookieHeader.match(/;\s*expires=([^;]+)/i)?.[1];
+    await session.defaultSession.cookies.set({
+      url: apiOrigin,
+      name: cookieName,
+      value: token,
+      path: '/',
+      httpOnly: true,
+      secure: new URL(apiOrigin).protocol === 'https:',
+      sameSite: 'strict',
+      ...(expires && Number.isFinite(Date.parse(expires)) ? { expirationDate: Date.parse(expires) / 1000 } : {})
+    });
+    currentRole = data.user.role;
+    currentNetworkStatus = 'unknown';
+    updateTray('unknown');
+    publishStatus();
+    void reportHeartbeat();
+    return data.user;
+  });
+  ipcMain.handle('desktop:current-user', async (event) => {
+    assertDesktopRenderer(event);
+    const response = await request('/api/auth/me');
+    if (!response.ok) return null;
+    const data = await response.json();
+    currentRole = data.user.role;
+    return data.user;
+  });
+  ipcMain.handle('desktop:dashboard', async (event) => {
+    assertDesktopRenderer(event);
+    const response = await request('/api/employee/dashboard');
+    return readJsonResponse(response);
+  });
+  ipcMain.handle('desktop:save-consent', async (event, enabled) => {
+    assertDesktopRenderer(event);
+    if (typeof enabled !== 'boolean') throw new Error('Choose whether to enable camera check-ins.');
+    const response = await request('/api/employee/camera-consent', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, consentVersion: cameraConsentVersion })
+    });
+    return readJsonResponse(response);
+  });
+  ipcMain.handle('desktop:upload-camera', async (event, imageBytes) => {
+    assertDesktopRenderer(event);
+    if (!(imageBytes instanceof Uint8Array) || imageBytes.length < 4 || imageBytes.length > 1024 * 1024) {
+      throw new Error('The camera image is invalid or too large.');
+    }
+    const response = await request('/api/activity/camera-checkins', {
+      method: 'POST',
+      body: Buffer.from(imageBytes),
+      headers: { 'Content-Type': 'image/jpeg' }
+    });
+    return readJsonResponse(response);
+  });
+  ipcMain.handle('desktop:logout', async (event) => {
+    assertDesktopRenderer(event);
+    try {
+      const response = await request('/api/auth/logout', { method: 'POST' });
+      if (!response.ok && response.status !== 401) await readJsonResponse(response);
+    } finally {
+      await clearSessionCookie();
+      currentRole = null;
+      currentNetworkStatus = 'unknown';
+      stopApplicationMonitor();
+      updateTray('unknown');
+      publishStatus({ signedOut: true });
+    }
+  });
+  ipcMain.handle('desktop:start-with-windows', (event, enabled) => {
+    assertDesktopRenderer(event);
+    if (typeof enabled !== 'boolean') throw new Error('Invalid startup preference.');
+    app.setLoginItemSettings({ openAtLogin: enabled });
+    refreshMenu();
+    return enabled;
+  });
+  ipcMain.handle('desktop:get-start-with-windows', (event) => {
+    assertDesktopRenderer(event);
+    return app.getLoginItemSettings().openAtLogin;
+  });
+}
 async function getCurrentWifiSsid() {
   if (process.platform !== 'win32') return null;
   try {
@@ -118,6 +236,7 @@ function updateTray(status) {
   tray?.setToolTip(`Ben Infotech Workforce | ${status[0].toUpperCase()}${status.slice(1)}`);
   if (popupAction === 'show') showAwayPopup();
   if (popupAction === 'close') closeAwayPopup();
+  publishStatus();
 }
 async function showCameraCheckinWindowIfEligible() {
   if (cameraEligibilityCheckedForAwayPeriod || cameraWindowShownForAwayPeriod || currentRole !== 'employee' || currentStatus !== 'away'
@@ -172,9 +291,21 @@ function buildTrayMenu() {
   const loginItem = app.getLoginItemSettings();
   return Menu.buildFromTemplate([
     { label: currentRole === 'admin' ? `Office Wi-Fi: ${currentNetworkStatus.replaceAll('_', ' ')}` : `Current status: ${currentStatus}`, enabled: false },
-    { label: 'Open workforce dashboard', click: () => { windowRef?.show(); windowRef?.focus(); } },
+    { label: 'Open workforce app', click: () => { windowRef?.show(); windowRef?.focus(); } },
     { label: 'Start with Windows', type: 'checkbox', checked: loginItem.openAtLogin, click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }) },
-    { label: 'Sign out', click: async () => { try { await request('/api/auth/logout', { method: 'POST' }); } finally { updateTray('unknown'); windowRef?.webContents.reload(); } } },
+    { label: 'Sign out', click: async () => {
+      try {
+        const response = await request('/api/auth/logout', { method: 'POST' });
+        if (!response.ok && response.status !== 401) await readJsonResponse(response);
+      } finally {
+        await clearSessionCookie();
+        currentRole = null;
+        currentNetworkStatus = 'unknown';
+        stopApplicationMonitor();
+        updateTray('unknown');
+        windowRef?.webContents.send('desktop:session-ended');
+      }
+    } },
     { type: 'separator' },
     { label: 'Quit and end session', click: () => app.quit() }
   ]);
@@ -185,7 +316,15 @@ async function reportHeartbeat() {
   requestInFlight = true;
   try {
     const response = await request('/api/auth/me');
-    if (!response.ok) { currentRole = null; currentNetworkStatus = 'unknown'; stopApplicationMonitor(); updateTray('unknown'); refreshMenu(); return; }
+    if (!response.ok) {
+      currentRole = null;
+      currentNetworkStatus = 'unknown';
+      stopApplicationMonitor();
+      updateTray('unknown');
+      publishStatus({ signedOut: true });
+      refreshMenu();
+      return;
+    }
     const auth = await response.json();
     const networkSsid = await getCurrentWifiSsid();
     if (auth.user.role === 'admin') {
@@ -199,6 +338,7 @@ async function reportHeartbeat() {
       } else {
         updateAdminNetwork('unknown');
       }
+      publishStatus({ networkSsid });
       return;
     }
     currentRole = 'employee';
@@ -210,16 +350,19 @@ async function reportHeartbeat() {
       if (result.officeNetworkStatus === 'matched') startApplicationMonitor();
       else stopApplicationMonitor();
       updateTray(result.status);
+      publishStatus({ networkSsid, lastHeartbeatAt: result.receivedAt });
       await showCameraCheckinWindowIfEligible();
     } else {
       currentNetworkStatus = 'unknown';
       stopApplicationMonitor();
       updateTray('unknown');
+      publishStatus({ networkSsid, error: `Heartbeat failed (${heartbeat.status})` });
     }
-  } catch {
+  } catch (error) {
     currentNetworkStatus = 'unknown';
     stopApplicationMonitor();
     updateTray('unknown');
+    publishStatus({ error: error.message });
   } finally {
     requestInFlight = false;
     refreshMenu();
@@ -227,15 +370,20 @@ async function reportHeartbeat() {
 }
 function createWindow() {
   windowRef = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 700,
-    minHeight: 560,
+    width: 980,
+    height: 760,
+    minWidth: 760,
+    minHeight: 620,
     show: false,
     backgroundColor: '#f5f8f8',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    webPreferences: {
+      preload: resolve(desktopDirectory, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
   });
-  windowRef.loadURL(apiOrigin);
+  windowRef.loadFile(desktopPagePath);
   windowRef.once('ready-to-show', () => windowRef.show());
   windowRef.on('close', (event) => {
     if (!quitting) { event.preventDefault(); windowRef.hide(); }
@@ -244,15 +392,24 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  registerDesktopIpc();
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const isWorkforceWindow = windowRef && webContents === windowRef.webContents;
     const isCameraRequest = permission === 'media'
       && details.isMainFrame
       && details.mediaTypes?.length === 1
       && details.mediaTypes.includes('video');
-    let isWorkforceOrigin = false;
-    try { isWorkforceOrigin = new URL(details.requestingUrl).origin === workforceOrigin; } catch {}
-    callback(Boolean(isWorkforceWindow && isCameraRequest && isWorkforceOrigin));
+    let isDesktopPage = false;
+    try {
+      const requestingUrl = new URL(details.requestingUrl);
+      const desktopUrl = new URL(desktopPageUrl);
+      isDesktopPage = requestingUrl.protocol === 'file:' && requestingUrl.pathname === desktopUrl.pathname;
+    } catch {}
+    callback(Boolean(isWorkforceWindow && isCameraRequest && isDesktopPage));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    if (permission !== 'media' || !windowRef || webContents !== windowRef.webContents) return false;
+    return details?.mediaType === 'video' && requestingOrigin === 'file://';
   });
   if (process.platform === 'win32' && process.env.EAM_ENABLE_STARTUP === '1') {
     app.setLoginItemSettings({ openAtLogin: true });

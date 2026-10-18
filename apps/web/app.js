@@ -9,18 +9,15 @@ const employeeNav = [['dashboard', 'My dashboard', '▦'], ['attendance', 'Atten
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
 function getPasswordStrength(value = '') {
-  const trimmed = value.trim();
-  if (!trimmed) return { score: 0, label: '', width: '0%', tone: 'low' };
-  let score = 0;
-  if (trimmed.length >= 8) score += 1;
-  if (trimmed.length >= 12) score += 1;
-  if (/[A-Z]/.test(trimmed) && /[a-z]/.test(trimmed)) score += 1;
-  if (/\d/.test(trimmed)) score += 1;
-  if (/[^A-Za-z0-9]/.test(trimmed)) score += 1;
-
-  if (score <= 2) return { score: 1, label: 'Low', width: '33%', tone: 'low' };
-  if (score <= 4) return { score: 2, label: 'Medium', width: '66%', tone: 'medium' };
-  return { score: 3, label: 'Strong', width: '100%', tone: 'strong' };
+  if (!value) return { score: 0, label: '' };
+  const score = [
+    value.length >= 12,
+    /[a-z]/.test(value) && /[A-Z]/.test(value),
+    /\d/.test(value),
+    /[^A-Za-z0-9]/.test(value)
+  ].filter(Boolean).length;
+  const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+  return { score, label: labels[score] };
 }
 
 function attachPasswordField(input) {
@@ -31,23 +28,16 @@ function attachPasswordField(input) {
   input.dataset.passwordBound = 'true';
   const toggle = wrapper.querySelector('.password-toggle');
   const meter = wrapper.parentElement?.querySelector('.password-strength');
-  const fill = meter?.querySelector('.password-meter-fill');
+  const bar = meter?.querySelector('.password-meter');
   const label = meter?.querySelector('.password-strength-label');
 
   const updateMeter = () => {
-    if (!meter || !fill || !label) return;
+    if (!meter || !bar || !label) return;
     const strength = getPasswordStrength(input.value);
-    fill.style.width = strength.width;
-    fill.dataset.strength = strength.tone;
-    if (input.value.trim()) {
-      label.textContent = strength.label;
-      meter.classList.add('visible');
-    } else {
-      label.textContent = '';
-      meter.classList.remove('visible');
-      fill.style.width = '0%';
-      fill.dataset.strength = 'low';
-    }
+    bar.dataset.score = String(strength.score);
+    bar.setAttribute('aria-valuenow', String(strength.score));
+    bar.setAttribute('aria-valuetext', strength.label || 'No password entered');
+    label.textContent = strength.label;
   };
 
   if (toggle) {
@@ -62,6 +52,7 @@ function attachPasswordField(input) {
   }
 
   input.addEventListener('input', updateMeter);
+  input.form?.addEventListener('reset', () => queueMicrotask(updateMeter));
   updateMeter();
 }
 
@@ -96,14 +87,14 @@ function getLocalDayStart() {
   dayStart.setHours(0, 0, 0, 0);
   return dayStart.toISOString();
 }
-function scheduleDashboardMidnightRefresh() {
+function scheduleDayBoundaryRefresh() {
   window.clearTimeout(state.dashboardMidnightTimer);
   const now = new Date();
   const nextMidnight = new Date(now);
   nextMidnight.setHours(24, 0, 0, 0);
   state.dashboardMidnightTimer = window.setTimeout(() => {
     state.dashboardMidnightTimer = null;
-    if (state.view === 'dashboard' && state.user) loadView();
+    if (['dashboard', 'attendance'].includes(state.view) && state.user) loadView();
   }, nextMidnight.getTime() - now.getTime());
 }
 function dashboardApiPath(path) {
@@ -385,7 +376,7 @@ function showWorkspace() {
     state.socket.on('activity:transition', (event) => {
       if (state.user.role === 'admin') toast(`${event.status} status updated`);
       if (state.user.role === 'employee' && event.userId === state.user.id) setEmployeeActivityStatus(event.status, event.occurredAt);
-      if (state.view === 'dashboard') loadView();
+      if (state.view === 'dashboard' || (state.view === 'attendance' && state.user.role === 'employee' && event.userId === state.user.id)) loadView();
     });
     state.socket.on('agent:stale', () => { if (state.view === 'dashboard') loadView(); });
     state.socket.on('application:switch', (event) => {
@@ -472,7 +463,7 @@ async function loadView() {
   document.querySelector('#top-eyebrow').textContent = state.user.role === 'admin' ? 'ADMINISTRATION' : 'MY WORKSPACE';
   pageContent.innerHTML = '<div class="empty-state">Loading current records…</div>';
   try {
-    if (state.view === 'dashboard') scheduleDashboardMidnightRefresh();
+    if (state.view === 'dashboard' || state.view === 'attendance') scheduleDayBoundaryRefresh();
     if (state.view === 'dashboard') state.user.role === 'admin' ? await renderAdminDashboard() : await renderEmployeeDashboard();
     else if (state.view === 'employees') await renderEmployees();
     else if (state.view === 'policies') await renderPolicies();
@@ -645,9 +636,10 @@ function drawEmployeeRows() {
 }
 async function renderEmployees() {
   pageContent.innerHTML = `<div class="page-heading"><div><h2>Employee directory</h2><p>Create and manage employee accounts. Passwords are stored only as hashes.</p></div><button id="add-employee-toggle" class="button button-primary">Add employee</button></div>
-    <section id="employee-form-panel" class="panel hidden" style="margin-bottom:16px"><div class="panel-header"><div><h3 id="employee-form-title">New employee account</h3><p id="employee-form-subtitle">Use a temporary password and deliver it securely to the employee.</p></div></div><div class="panel-body"><form id="employee-form"><div class="form-grid"><div class="field"><label for="new-name">Full name</label><input id="new-name" name="fullName" required minlength="2" maxlength="120"></div><div class="field"><label for="new-email">Work email</label><input id="new-email" name="email" type="email" required maxlength="254"></div><div class="field"><label for="new-department">Department</label><input id="new-department" name="department" maxlength="100"></div><div class="field"><label for="new-designation">Designation</label><input id="new-designation" name="designation" maxlength="100"></div><div class="field"><label for="new-password">Temporary password</label><div class="password-input-wrap"><input id="new-password" name="temporaryPassword" type="password" required minlength="12" autocomplete="new-password"><button class="password-toggle" type="button" aria-label="Show password" aria-pressed="false">👁</button></div><div class="password-strength" aria-live="polite"><div class="password-meter"><span class="password-meter-fill"></span></div><span class="password-strength-label"></span></div></div></div><p class="form-error" id="employee-error" role="alert"></p><button id="employee-submit-button" class="button button-primary" type="submit">Create account</button></form></div></section>
+    <section id="employee-form-panel" class="panel hidden" style="margin-bottom:16px"><div class="panel-header"><div><h3 id="employee-form-title">New employee account</h3><p id="employee-form-subtitle">Use a temporary password and deliver it securely to the employee.</p></div></div><div class="panel-body"><form id="employee-form"><div class="form-grid"><div class="field"><label for="new-name">Full name</label><input id="new-name" name="fullName" required minlength="2" maxlength="120"></div><div class="field"><label for="new-email">Work email</label><input id="new-email" name="email" type="email" required maxlength="254"></div><div class="field"><label for="new-department">Department</label><input id="new-department" name="department" maxlength="100"></div><div class="field"><label for="new-designation">Designation</label><input id="new-designation" name="designation" maxlength="100"></div><div class="field"><label for="new-password">Temporary password</label><div class="password-input-wrap"><input id="new-password" name="temporaryPassword" type="password" required minlength="12" autocomplete="new-password"><button class="password-toggle" type="button" aria-label="Show password" aria-pressed="false">👁</button></div><div class="password-strength"><div class="password-meter" role="meter" aria-label="Password strength" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0" aria-valuetext="No password entered" data-score="0"><span></span><span></span><span></span><span></span></div><span class="password-strength-label"></span><p class="password-guidance">Use at least 12 characters with a mix of uppercase and lowercase letters, numbers, and symbols.</p></div></div></div><p class="form-error" id="employee-error" role="alert"></p><button id="employee-submit-button" class="button button-primary" type="submit">Create account</button></form></div></section>
     <section class="panel"><div class="panel-header"><h3>Employees</h3><div class="filters"><input id="employee-search" type="search" placeholder="Search employees" aria-label="Search employees"></div></div><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Department</th><th>Designation</th><th>Account</th><th>Actions</th></tr></thead><tbody id="employee-rows"></tbody></table></div></section>`;
   const addEmployeeToggle = document.querySelector('#add-employee-toggle');
+  setupPasswordFields(document.querySelector('#employee-form-panel'));
   addEmployeeToggle.addEventListener('click', () => {
     const form = document.querySelector('#employee-form');
     const panel = document.querySelector('#employee-form-panel');
@@ -789,9 +781,14 @@ async function renderReports() {
 async function renderEmployeeEvents() {
   const path = state.view === 'attendance' ? '/employee/attendance' : '/employee/activity';
   if (state.view === 'attendance') {
-    const { events: statusEvents, note } = await api(path);
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    const query = `?from=${encodeURIComponent(dayStart.toISOString())}&to=${encodeURIComponent(dayEnd.toISOString())}`;
+    const { events: statusEvents, note } = await api(`${path}${query}`);
     const events = combineTimelineEvents(statusEvents).slice(0, 500);
-    pageContent.innerHTML = `<div class="page-heading"><div><h2>Attendance events</h2><p>Only your account's records are available in this view.</p></div></div>${note ? `<div class="notice" style="margin-bottom:14px">${escapeHtml(note)}</div>` : ''}<section class="panel timeline-panel"><div class="panel-header"><h3>Recorded activity</h3></div><div class="panel-body"><div class="event-list">${events.length ? events.map((event) => renderTimelineRow(event, true)).join('') : '<div class="empty-state">There are no recorded events yet.</div>'}</div></div></section>`;
+    pageContent.innerHTML = `<div class="page-heading"><div><h2>Attendance events</h2><p>Showing today's records for your account. This view refreshes daily at midnight.</p></div></div>${note ? `<div class="notice" style="margin-bottom:14px">${escapeHtml(note)}</div>` : ''}<section class="panel timeline-panel"><div class="panel-header"><h3>Recorded activity</h3></div><div class="panel-body"><div class="event-list">${events.length ? events.map((event) => renderTimelineRow(event, true)).join('') : '<div class="empty-state">There are no recorded events yet.</div>'}</div></div></section>`;
     return;
   }
 

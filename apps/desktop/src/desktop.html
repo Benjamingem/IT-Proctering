@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; media-src blob:; object-src 'none'; base-uri 'none';">
+  <meta name="theme-color" content="#f5f8f8">
+  <title>Ben Infotech Workforce</title>
+  <link rel="stylesheet" href="./desktop.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">B</span><span>Ben Infotech<small>WORKFORCE</small></span></div>
+      <div class="service-state"><span class="status-dot" id="service-dot"></span><span id="service-label">Connecting</span></div>
+    </header>
+
+    <main>
+      <section class="login-view" id="login-view">
+        <div class="intro">
+          <p class="eyebrow">EMPLOYEE DESKTOP APP</p>
+          <h1>Sign in to your workspace</h1>
+          <p>Keep the app running to report your device availability.</p>
+        </div>
+        <form id="login-form" class="panel login-form">
+          <label for="login-email">Work email</label>
+          <input id="login-email" name="email" type="email" autocomplete="username" required maxlength="254">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+          <p class="form-error" id="login-error" role="alert"></p>
+          <button class="button button-primary" id="login-button" type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <section class="workspace hidden" id="workspace">
+        <div class="page-heading">
+          <div><p class="eyebrow">EMPLOYEE WORKSPACE</p><h1>Your workday</h1><p class="muted">Availability comes from Windows activity on an approved office Wi-Fi network.</p></div>
+          <div class="account"><span class="avatar" id="avatar">E</span><span><strong id="user-name"></strong><small id="user-email"></small></span><button class="button button-secondary" id="logout-button" type="button">Sign out</button></div>
+        </div>
+
+        <section class="status-card panel">
+          <div><p class="eyebrow">CURRENT DEVICE STATUS</p><h2 id="current-status">Unknown</h2><p class="muted" id="status-detail">Waiting for the Windows agent.</p></div>
+          <div class="status-orb" id="status-orb" aria-hidden="true">●</div>
+        </section>
+
+        <div class="notice" id="network-notice" role="status">Checking office Wi-Fi…</div>
+
+        <div class="metrics">
+          <article class="metric panel"><span>First available</span><strong id="first-available">Not reported</strong></article>
+          <article class="metric panel"><span>Away sessions today</span><strong id="away-sessions">0</strong></article>
+          <article class="metric panel"><span>Available interaction</span><strong id="available-time">00h 00m</strong></article>
+          <article class="metric panel"><span>Away duration</span><strong id="away-time">00h 00m</strong></article>
+        </div>
+
+        <section class="panel camera-consent">
+          <div class="panel-heading"><div><h2>Optional camera safety check-in</h2><p id="camera-policy">Checking Admin policy…</p></div></div>
+          <div class="panel-body">
+            <p>When enabled by your Admin, opting in allows one still photo after each Away period on approved office Wi-Fi. A visible countdown and camera-active indicator appear first; you can cancel. Photos are encrypted and deleted after 30 days. No audio or continuous video is captured.</p>
+            <label class="consent-choice"><input id="camera-consent" type="checkbox"><span>I consent to the one-photo Away check-in described above.</span></label>
+            <div class="consent-actions"><button class="button button-primary" id="save-consent" type="button">Save camera choice</button><span id="consent-result" class="muted" role="status"></span></div>
+          </div>
+        </section>
+
+        <section class="panel camera-panel hidden" id="camera-panel" role="status" aria-live="polite">
+          <div class="panel-heading"><div><h2>Camera check-in</h2><p>One still photo for this Away period</p></div><span class="camera-live"><span></span> Camera check-in</span></div>
+          <div class="panel-body">
+            <p id="camera-message">Camera check-in starts in 5 seconds. Keep this indicator visible; no audio or video is recorded.</p>
+            <video id="camera-preview" class="camera-preview hidden" autoplay playsinline muted aria-label="Visible camera check-in preview"></video>
+            <img id="camera-photo" class="camera-photo hidden" alt="Saved camera check-in photo">
+            <p id="camera-error" class="form-error" role="alert"></p>
+            <button class="button button-secondary" id="cancel-camera" type="button">Cancel this check-in</button>
+          </div>
+        </section>
+
+        <section class="panel timeline">
+          <div class="panel-heading"><div><h2>Today's timeline</h2><p>Status transitions reported by the Windows agent</p></div></div>
+          <ol id="event-list" class="event-list"><li class="muted">No activity recorded yet.</li></ol>
+        </section>
+        <label class="startup-choice"><input id="start-with-windows" type="checkbox"><span>Start this app when I sign in to Windows</span></label>
+        <p class="footnote">Available means recent OS-reported interaction, not verified productive work. Keep the desktop app open in the system tray while working.</p>
+      </section>
+
+      <section class="admin-notice panel hidden" id="admin-notice">
+        <p class="eyebrow">ADMIN ACCOUNT</p>
+        <h1>Use the Admin dashboard in your browser</h1>
+        <p>This separate desktop app is for employee availability and camera check-ins. The app can report this computer's office Wi-Fi, but Admin management remains in the web dashboard.</p>
+        <button class="button button-secondary" id="admin-signout" type="button">Sign out</button>
+      </section>
+    </main>
+  </div>
+  <script src="./desktop-renderer.js"></script>
+</body>
+</html>

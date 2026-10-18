@@ -35,14 +35,18 @@ h1, h2, h3, p { margin-top: 0; }
 .password-input-wrap input { padding-right: 42px; }
 .password-toggle { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); border: 0; background: transparent; color: var(--muted); font-size: 16px; padding: 4px; line-height: 1; }
 .password-toggle:hover { color: var(--ink); }
-.password-strength { display: none; margin-top: 8px; }
-.password-strength.visible { display: block; }
-.password-meter { width: 100%; height: 8px; border-radius: 999px; background: #edf1f2; overflow: hidden; }
-.password-meter-fill { display: block; width: 0%; height: 100%; border-radius: inherit; background: #d25656; transition: width .2s ease, background-color .2s ease; }
-.password-meter-fill[data-strength="low"] { background: #d25656; }
-.password-meter-fill[data-strength="medium"] { background: #eb9f2f; }
-.password-meter-fill[data-strength="strong"] { background: #2ca66f; }
+.password-strength { margin-top: 8px; }
+.password-meter { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; }
+.password-meter span { height: 5px; border-radius: 999px; background: #dfe4e5; transition: background-color .2s ease; }
+.password-meter[data-score="1"] span:nth-child(1),
+.password-meter[data-score="2"] span:nth-child(1) { background: #f25555; }
+.password-meter[data-score="2"] span:nth-child(2) { background: #f7c52f; }
+.password-meter[data-score="3"] span:nth-child(1) { background: #f25555; }
+.password-meter[data-score="3"] span:nth-child(2) { background: #f7c52f; }
+.password-meter[data-score="3"] span:nth-child(3) { background: #0aaa52; }
+.password-meter[data-score="4"] span { background: #2ca66f; }
 .password-strength-label { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.password-guidance { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 input, select { width: 100%; min-height: 42px; border: 1px solid #cfdadb; border-radius: 5px; padding: 9px 11px; background: #fff; color: var(--ink); outline: none; }
 input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(8, 125, 120, .12); }
 .button { min-height: 40px; padding: 0 16px; border-radius: 5px; border: 1px solid transparent; font-weight: 600; font-size: 13px; }
@@ -55,8 +59,6 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px r
 .table-action { min-height: 30px; padding: 0 10px; font-size: 11px; }
 .form-error { min-height: 18px; margin: 3px 0 0; color: var(--red); font-size: 12px; }
 .privacy-note { color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; margin: 26px 0 0; font-size: 11px; line-height: 1.6; }
-.demo-credentials { display: grid; gap: 3px; font-size: 11px; overflow-wrap: anywhere; }
-.demo-credentials strong { color: var(--ink); margin-bottom: 3px; }
 .workspace { min-height: 100vh; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 24px 16px 14px; color: #e8f1ef; background: #173b3e; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: white; font: 700 16px 'Aptos Display', 'Segoe UI', sans-serif; margin: 2px 8px 43px; }
